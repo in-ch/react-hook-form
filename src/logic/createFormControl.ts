@@ -80,6 +80,7 @@ import unset from '../utils/unset';
 import generateWatchOutput from './generateWatchOutput';
 import getDirtyFields from './getDirtyFields';
 import getEventValue from './getEventValue';
+import getFieldArrayParentNames from './getFieldArrayParentNames';
 import getFieldValue from './getFieldValue';
 import getFieldValueAs from './getFieldValueAs';
 import getResolverOptions from './getResolverOptions';
@@ -87,7 +88,6 @@ import getRuleValue from './getRuleValue';
 import getValidationModes from './getValidationModes';
 import hasPromiseValidation from './hasPromiseValidation';
 import hasValidation from './hasValidation';
-import isNameInFieldArray from './isNameInFieldArray';
 import isWatched from './isWatched';
 import iterateFieldsByAction from './iterateFieldsByAction';
 import schemaErrorLookup from './schemaErrorLookup';
@@ -409,9 +409,15 @@ export function createFormControl<
         );
 
         isPreviousDirty = !!get(_formState.dirtyFields, name);
-        isCurrentFieldPristine
-          ? unset(_formState.dirtyFields, name)
-          : set(_formState.dirtyFields, name, true);
+
+        if (isCurrentFieldPristine !== _formState.isDirty) {
+          _formState.dirtyFields = getDirtyFields(_defaultValues, _formValues);
+        } else {
+          isCurrentFieldPristine
+            ? unset(_formState.dirtyFields, name)
+            : set(_formState.dirtyFields, name, true);
+        }
+
         output.dirtyFields = _formState.dirtyFields;
         shouldUpdateField =
           shouldUpdateField ||
@@ -510,7 +516,13 @@ export function createFormControl<
       for (const name of names) {
         const error = get(errors, name);
         error
-          ? set(_formState.errors, name, error)
+          ? _names.array.has(name) && isObject(error)
+            ? updateFieldArrayRootError(
+                _formState.errors,
+                { [name]: error } as Partial<Record<string, FieldError>>,
+                name,
+              )
+            : set(_formState.errors, name, error)
           : unset(_formState.errors, name);
       }
     } else {
@@ -861,11 +873,18 @@ export function createFormControl<
 
     if (!isValueUnchanged) {
       const watched = isWatched(name, _names);
+      const values = cloneObject(_formValues);
+
+      if (!isFieldArray) {
+        for (const arrayName of getFieldArrayParentNames(_names.array, name)) {
+          _subjects.array.next({ name: arrayName, values });
+        }
+      }
 
       _subjects.state.next({
         ...(watched && _formState),
         name: _state.mount || watched ? name : undefined,
-        values: cloneObject(_formValues),
+        values,
       });
     }
   };
@@ -1400,7 +1419,10 @@ export function createFormControl<
           }
 
           (_options.shouldUnregister || options.shouldUnregister) &&
-            !(isNameInFieldArray(_names.array, name) && _state.action) &&
+            !(
+              getFieldArrayParentNames(_names.array, name).length &&
+              _state.action
+            ) &&
             _names.unMount.add(name);
         }
       },
