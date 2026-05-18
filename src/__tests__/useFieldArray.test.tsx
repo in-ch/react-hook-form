@@ -1372,6 +1372,131 @@ describe('useFieldArray', () => {
       },
     );
 
+    it('should not remount field-array rows on consecutive descendant setValue calls (key thrashing regression, #13420)', async () => {
+      const mountCounts: number[] = [0, 0, 0];
+
+      const Row = ({
+        index,
+        register,
+      }: {
+        index: number;
+        register: UseFormReturn<{
+          test: { name: string }[];
+        }>['register'];
+      }) => {
+        React.useEffect(() => {
+          mountCounts[index] += 1;
+        }, [index]);
+
+        return <input {...register(`test.${index}.name` as const)} />;
+      };
+
+      let setValue: UseFormReturn<{
+        test: { name: string }[];
+      }>['setValue'];
+
+      const Component = () => {
+        const {
+          register,
+          control,
+          setValue: tempSetValue,
+        } = useForm({
+          defaultValues: {
+            test: [{ name: 'a' }, { name: 'b' }, { name: 'c' }],
+          },
+        });
+        const { fields } = useFieldArray({ name: 'test', control });
+
+        setValue = tempSetValue;
+
+        return (
+          <form>
+            {fields.map((field, i) => (
+              <Row key={field.id} index={i} register={register} />
+            ))}
+          </form>
+        );
+      };
+
+      render(<Component />);
+
+      // Each row mounts exactly once on initial render.
+      expect(mountCounts).toEqual([1, 1, 1]);
+
+      // These are sibling-field writes on the same rows. useFieldArray is
+      // supposed to decouple row rendering from descendant value changes, so
+      // none of the rows should unmount/remount.
+      await act(async () => {
+        setValue('test.0.name', 'a1');
+      });
+      await act(async () => {
+        setValue('test.1.name', 'b1');
+      });
+      await act(async () => {
+        setValue('test.2.name', 'c1');
+      });
+
+      // When useFieldArray receives an array notification for the `test` root
+      // on a descendant setValue, it regenerates every field id, so React
+      // unmounts and remounts every row on each call -> mount counts climb
+      // (key thrashing, the regression introduced by #13420).
+      expect(mountCounts).toEqual([1, 1, 1]);
+    });
+
+    it('should not re-render the useFieldArray host on a descendant setValue (#13420)', async () => {
+      let renderCount = 0;
+
+      let setValue: UseFormReturn<{
+        test: { name: string }[];
+      }>['setValue'];
+
+      const Component = () => {
+        const {
+          register,
+          control,
+          setValue: tempSetValue,
+        } = useForm({
+          defaultValues: {
+            test: [{ name: 'a' }, { name: 'b' }, { name: 'c' }],
+          },
+        });
+        const { fields } = useFieldArray({ name: 'test', control });
+
+        setValue = tempSetValue;
+        renderCount += 1;
+
+        return (
+          <form>
+            {fields.map((field, i) => (
+              <input key={field.id} {...register(`test.${i}.name` as const)} />
+            ))}
+          </form>
+        );
+      };
+
+      render(<Component />);
+
+      const rendersAfterMount = renderCount;
+
+      // A descendant write only changes a single leaf value; it must not push
+      // a new array snapshot into useFieldArray, so the component owning the
+      // field array should not re-render.
+      await act(async () => {
+        setValue('test.0.name', 'a1');
+      });
+      await act(async () => {
+        setValue('test.1.name', 'b1');
+      });
+      await act(async () => {
+        setValue('test.2.name', 'c1');
+      });
+
+      // #13420 emitted an array notification for the `test` root on every
+      // descendant setValue, which called setFields and re-rendered the host
+      // on every keystroke-equivalent write.
+      expect(renderCount).toBe(rendersAfterMount);
+    });
+
     it.each(['dirtyFields'])(
       'should unset name from dirtyFieldRef if array field values are not different with default value when formState.%s is defined',
       (property) => {
@@ -4752,4 +4877,189 @@ it('should not lose defaultValues when useFieldArray and watch are used together
   for (const val of defaultValuesSnapshots) {
     expect(val).toEqual(defaultValues);
   }
+});
+
+it('should not corrupt parent state when remove is called with values prop', async () => {
+  type Item = { name: string; text: string };
+  type FormValues = { myfield: Item[] };
+
+  const onUpdateCalls: FormValues[] = [];
+
+  const App = () => {
+    const [model, setModel] = useState<FormValues>({ myfield: [] });
+
+    const onUpdate = (updated: FormValues) => {
+      onUpdateCalls.push(JSON.parse(JSON.stringify(updated)));
+      setModel(updated);
+    };
+
+    const {
+      control,
+      watch,
+      formState: { isValid, isDirty },
+    } = useForm<FormValues>({
+      mode: 'onChange',
+      defaultValues: { myfield: model.myfield ? [...model.myfield] : [] },
+      values: model,
+    });
+
+    const { fields, append, remove } = useFieldArray({
+      control,
+      name: 'myfield',
+    });
+
+    const watchedValues = watch();
+
+    React.useEffect(() => {
+      if (isValid && isDirty) {
+        onUpdate(watchedValues);
+      }
+    }, [watchedValues, isValid, isDirty]);
+
+    return (
+      <div>
+        {fields.map((item, index) => (
+          <div key={item.id}>
+            <Controller
+              control={control}
+              name={`myfield.${index}.name` as const}
+              rules={{ required: true }}
+              render={({ field }) => (
+                <input data-testid={`name-${index}`} {...field} />
+              )}
+            />
+            <Controller
+              control={control}
+              name={`myfield.${index}.text` as const}
+              rules={{ required: true }}
+              render={({ field }) => (
+                <input data-testid={`text-${index}`} {...field} />
+              )}
+            />
+            <button type="button" onClick={() => remove(index)}>
+              remove-{index}
+            </button>
+          </div>
+        ))}
+        <button type="button" onClick={() => append({ name: '', text: '' })}>
+          add
+        </button>
+      </div>
+    );
+  };
+
+  render(<App />);
+
+  fireEvent.click(screen.getByText('add'));
+
+  await waitFor(() => screen.getByTestId('name-0'));
+
+  fireEvent.change(screen.getByTestId('name-0'), {
+    target: { value: 'Alice' },
+  });
+  fireEvent.change(screen.getByTestId('text-0'), {
+    target: { value: 'hello' },
+  });
+
+  await waitFor(() =>
+    expect(onUpdateCalls.some((c) => c.myfield[0]?.name === 'Alice')).toBe(
+      true,
+    ),
+  );
+
+  fireEvent.click(screen.getByText('add'));
+
+  await waitFor(() => screen.getByTestId('name-1'));
+
+  fireEvent.change(screen.getByTestId('name-1'), {
+    target: { value: 'Bob' },
+  });
+  fireEvent.change(screen.getByTestId('text-1'), {
+    target: { value: 'world' },
+  });
+
+  await waitFor(() =>
+    expect(onUpdateCalls.some((c) => c.myfield[1]?.name === 'Bob')).toBe(true),
+  );
+
+  onUpdateCalls.length = 0;
+
+  fireEvent.click(screen.getByText('remove-0'));
+
+  await waitFor(() => {
+    const lastUpdate = onUpdateCalls[onUpdateCalls.length - 1];
+    if (lastUpdate) {
+      expect(lastUpdate.myfield).toHaveLength(1);
+      expect(lastUpdate.myfield[0].name).toBe('Bob');
+      expect(lastUpdate.myfield[0].text).toBe('world');
+    }
+  });
+
+  for (const call of onUpdateCalls) {
+    expect(call.myfield).toHaveLength(1);
+  }
+});
+
+it('should not restore defaultValues when appending null after remove in same action', async () => {
+  type FormValues = {
+    items: { obj: { value: string } | null }[];
+  };
+
+  const watchedValues: FormValues['items'][] = [];
+
+  const App = () => {
+    const { control, register } = useForm<FormValues>({
+      defaultValues: { items: [{ obj: { value: 'A' } }] },
+    });
+    const { fields, append, remove } = useFieldArray({
+      control,
+      name: 'items',
+    });
+    const watchedItems = useWatch({ control, name: 'items' });
+
+    watchedValues.push(watchedItems);
+
+    return (
+      <>
+        {fields.map((field, index) => (
+          <div key={field.id}>
+            <label>
+              A
+              <input
+                type="radio"
+                value="A"
+                {...register(`items.${index}.obj.value` as const)}
+              />
+            </label>
+            <label>
+              C
+              <input
+                type="radio"
+                value="C"
+                {...register(`items.${index}.obj.value` as const)}
+              />
+            </label>
+          </div>
+        ))}
+        <button
+          type="button"
+          onClick={() => {
+            remove(0);
+            append({ obj: null });
+          }}
+        >
+          remove and append
+        </button>
+      </>
+    );
+  };
+
+  render(<App />);
+
+  fireEvent.click(screen.getByRole('radio', { name: 'C' }));
+  fireEvent.click(screen.getByRole('button', { name: 'remove and append' }));
+
+  await waitFor(() => {
+    expect(watchedValues[watchedValues.length - 1]).toEqual([{ obj: null }]);
+  });
 });
