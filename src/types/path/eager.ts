@@ -1,7 +1,13 @@
 import type { FieldValues } from '../fields';
-import type { BrowserNativeObject, IsAny, IsEqual, Primitive } from '../utils';
+import type {
+  BrowserNativeObject,
+  IsAny,
+  IsEqual,
+  OpaqueType,
+  Primitive,
+} from '../utils';
 
-import type { ArrayKey, IsTuple, TupleKeys } from './common';
+import type { ArrayKey, IsTuple, Prev, TupleKeys } from './common';
 
 /**
  * Helper function to break apart T1 and check if any are equal to T2
@@ -21,16 +27,19 @@ type AnyIsEqual<T1, T2> = T1 extends T2
  *
  * See {@link Path}
  */
-type PathImpl<K extends string | number, V, TraversedTypes> = V extends
-  | Primitive
-  | BrowserNativeObject
+type PathImpl<
+  K extends string | number,
+  V,
+  TraversedTypes,
+  D extends number = 9,
+> = V extends Primitive | BrowserNativeObject | OpaqueType
   ? `${K}`
   : // Check so that we don't recurse into the same type
     // by ensuring that the types are mutually assignable
     // mutually required to avoid false positives of subtypes
     true extends AnyIsEqual<TraversedTypes, V>
     ? `${K}`
-    : `${K}` | `${K}.${PathInternal<V, TraversedTypes | V>}`;
+    : `${K}` | `${K}.${PathInternal<V, TraversedTypes | V, Prev[D]>}`;
 
 /**
  * Helper type for recursively constructing paths through a type.
@@ -38,15 +47,18 @@ type PathImpl<K extends string | number, V, TraversedTypes> = V extends
  *
  * See {@link Path}
  */
-type PathInternal<T, TraversedTypes = T> =
-  T extends ReadonlyArray<infer V>
+type PathInternal<T, TraversedTypes = T, D extends number = 9> = [D] extends [
+  never,
+]
+  ? never
+  : T extends ReadonlyArray<infer V>
     ? IsTuple<T> extends true
       ? {
-          [K in TupleKeys<T>]-?: PathImpl<K & string, T[K], TraversedTypes>;
+          [K in TupleKeys<T>]-?: PathImpl<K & string, T[K], TraversedTypes, D>;
         }[TupleKeys<T>]
-      : PathImpl<ArrayKey, V, TraversedTypes>
+      : PathImpl<ArrayKey, V, TraversedTypes, D>
     : {
-        [K in keyof T]-?: PathImpl<K & string, T[K], TraversedTypes>;
+        [K in keyof T]-?: PathImpl<K & string, T[K], TraversedTypes, D>;
       }[keyof T];
 
 /**
@@ -59,7 +71,7 @@ type PathInternal<T, TraversedTypes = T> =
  */
 // We want to explode the union type and process each individually
 // so assignable types don't leak onto the stack from the base.
-export type Path<T> = T extends any ? PathInternal<T> : never;
+export type Path<T> = T extends unknown ? PathInternal<T> : never;
 
 /**
  * See {@link Path}
@@ -73,14 +85,17 @@ export type FieldPath<TFieldValues extends FieldValues> = Path<TFieldValues>;
  *
  * See {@link ArrayPath}
  */
-type ArrayPathImpl<K extends string | number, V, TraversedTypes> = V extends
-  | Primitive
-  | BrowserNativeObject
+type ArrayPathImpl<
+  K extends string | number,
+  V,
+  TraversedTypes,
+  D extends number = 9,
+> = V extends Primitive | BrowserNativeObject | OpaqueType
   ? IsAny<V> extends true
     ? string
     : never
   : V extends ReadonlyArray<infer U>
-    ? U extends Primitive | BrowserNativeObject
+    ? U extends Primitive | BrowserNativeObject | OpaqueType
       ? IsAny<V> extends true
         ? string
         : never
@@ -89,10 +104,10 @@ type ArrayPathImpl<K extends string | number, V, TraversedTypes> = V extends
         // mutually required to avoid false positives of subtypes
         true extends AnyIsEqual<TraversedTypes, V>
         ? never
-        : `${K}` | `${K}.${ArrayPathInternal<V, TraversedTypes | V>}`
+        : `${K}` | `${K}.${ArrayPathInternal<V, TraversedTypes | V, Prev[D]>}`
     : true extends AnyIsEqual<TraversedTypes, V>
       ? never
-      : `${K}.${ArrayPathInternal<V, TraversedTypes | V>}`;
+      : `${K}.${ArrayPathInternal<V, TraversedTypes | V, Prev[D]>}`;
 
 /**
  * Helper type for recursively constructing paths through a type.
@@ -100,19 +115,23 @@ type ArrayPathImpl<K extends string | number, V, TraversedTypes> = V extends
  *
  * See {@link ArrayPath}
  */
-type ArrayPathInternal<T, TraversedTypes = T> =
-  T extends ReadonlyArray<infer V>
+type ArrayPathInternal<T, TraversedTypes = T, D extends number = 9> = [
+  D,
+] extends [never]
+  ? never
+  : T extends ReadonlyArray<infer V>
     ? IsTuple<T> extends true
       ? {
           [K in TupleKeys<T>]-?: ArrayPathImpl<
             K & string,
             T[K],
-            TraversedTypes
+            TraversedTypes,
+            D
           >;
         }[TupleKeys<T>]
-      : ArrayPathImpl<ArrayKey, V, TraversedTypes>
+      : ArrayPathImpl<ArrayKey, V, TraversedTypes, D>
     : {
-        [K in keyof T]-?: ArrayPathImpl<K & string, T[K], TraversedTypes>;
+        [K in keyof T]-?: ArrayPathImpl<K & string, T[K], TraversedTypes, D>;
       }[keyof T];
 
 /**
@@ -126,7 +145,7 @@ type ArrayPathInternal<T, TraversedTypes = T> =
  */
 // We want to explode the union type and process each individually
 // so assignable types don't leak onto the stack from the base.
-export type ArrayPath<T> = T extends any ? ArrayPathInternal<T> : never;
+export type ArrayPath<T> = T extends unknown ? ArrayPathInternal<T> : never;
 
 /**
  * See {@link ArrayPath}
@@ -149,7 +168,7 @@ export type PathValue<T, P extends Path<T> | ArrayPath<T>> = PathValueImpl<
   P
 >;
 
-type PathValueImpl<T, P extends string> = T extends any
+type PathValueImpl<T, P extends string> = T extends unknown
   ? P extends `${infer K}.${infer R}`
     ? K extends keyof T
       ? undefined extends T[K]
@@ -157,7 +176,9 @@ type PathValueImpl<T, P extends string> = T extends any
         : PathValueImpl<T[K], R>
       : K extends `${ArrayKey}`
         ? T extends ReadonlyArray<infer V>
-          ? PathValueImpl<V, R>
+          ?
+              | PathValueImpl<V, R>
+              | (TupleKeys<T> extends never ? Extract<V, undefined> : never)
           : never
         : never
     : P extends keyof T

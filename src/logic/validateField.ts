@@ -13,6 +13,7 @@ import type {
 import get from '../utils/get';
 import isBoolean from '../utils/isBoolean';
 import isCheckBoxInput from '../utils/isCheckBoxInput';
+import isDateObject from '../utils/isDateObject';
 import isEmptyObject from '../utils/isEmptyObject';
 import isFileInput from '../utils/isFileInput';
 import isFunction from '../utils/isFunction';
@@ -51,6 +52,7 @@ export default async <T extends FieldValues>(
     name,
     valueAsNumber,
     mount,
+    _c,
   } = field._f;
   const inputValue: NativeFieldValue = get(formValues, name);
   if (!mount || disabledFieldNames.has(name)) {
@@ -58,23 +60,34 @@ export default async <T extends FieldValues>(
   }
   const inputRef: HTMLInputElement = refs ? refs[0] : (ref as HTMLInputElement);
   const setCustomValidity = (message?: string | boolean) => {
-    if (shouldUseNativeValidation && inputRef.reportValidity) {
-      inputRef.setCustomValidity(isBoolean(message) ? '' : message || '');
-      inputRef.reportValidity();
+    if (shouldUseNativeValidation && isFunction(inputRef.reportValidity)) {
+      const validationRef =
+        refs?.find((ref) => !ref.disabled && isFunction(ref.reportValidity)) ||
+        inputRef;
+      const validityMessage = isBoolean(message) ? '' : message || '';
+      if (refs) {
+        refs.forEach(
+          (ref) =>
+            isFunction(ref.setCustomValidity) &&
+            ref.setCustomValidity(validityMessage),
+        );
+      } else {
+        inputRef.setCustomValidity(validityMessage);
+      }
+      validationRef.reportValidity();
     }
   };
   const error: InternalFieldErrors = {};
-  const isRadio = isRadioInput(ref);
-  const isCheckBox = isCheckBoxInput(ref);
+  const isRadio = !_c && isRadioInput(ref);
+  const isCheckBox = !_c && isCheckBoxInput(ref);
   const isRadioOrCheckbox = isRadio || isCheckBox;
   const isEmpty =
     ((valueAsNumber || isFileInput(ref)) &&
       isUndefined(ref.value) &&
       isUndefined(inputValue)) ||
-    (isHTMLElement(ref) && ref.value === '') ||
+    (isHTMLElement(ref) && ref.value === '' && !_c) ||
     inputValue === '' ||
-    (Array.isArray(inputValue) && !inputValue.length) ||
-    (valueAsNumber && typeof inputValue === 'number' && isNaN(inputValue));
+    (Array.isArray(inputValue) && !inputValue.length);
   const appendErrorsCurry = appendErrors.bind(
     null,
     name,
@@ -130,9 +143,13 @@ export default async <T extends FieldValues>(
     const maxOutput = getValueAndMessage(max);
     const minOutput = getValueAndMessage(min);
 
-    if (!isNullOrUndefined(inputValue) && !isNaN(inputValue as number)) {
+    if (
+      !isNullOrUndefined(inputValue) &&
+      !isDateObject(inputValue) &&
+      !isNaN(inputValue as number)
+    ) {
       const valueNumber =
-        (ref as HTMLInputElement).valueAsNumber ||
+        (!_c && (ref as HTMLInputElement).valueAsNumber) ||
         (inputValue ? +inputValue : inputValue);
       if (!isNullOrUndefined(maxOutput.value)) {
         exceedMax = valueNumber > maxOutput.value;
@@ -142,7 +159,8 @@ export default async <T extends FieldValues>(
       }
     } else {
       const valueDate =
-        (ref as HTMLInputElement).valueAsDate || new Date(inputValue as string);
+        (!_c && (ref as HTMLInputElement).valueAsDate) ||
+        new Date(inputValue as string);
       const convertTimeToDate = (time: unknown) =>
         new Date(new Date().toDateString() + ' ' + time);
       const isTime = ref.type == 'time';
@@ -181,7 +199,7 @@ export default async <T extends FieldValues>(
   }
 
   if (
-    (maxLength || minLength) &&
+    (!isNullOrUndefined(maxLength) || !isNullOrUndefined(minLength)) &&
     !isEmpty &&
     (isString(inputValue) || (isFieldArray && Array.isArray(inputValue)))
   ) {
@@ -262,7 +280,9 @@ export default async <T extends FieldValues>(
             ...appendErrorsCurry(key, validateError.message),
           };
 
-          setCustomValidity(validateError.message);
+          if (!validateAllFieldCriteria) {
+            setCustomValidity(validateError.message);
+          }
 
           if (validateAllFieldCriteria) {
             error[name] = validationResult;
@@ -282,6 +302,9 @@ export default async <T extends FieldValues>(
     }
   }
 
-  setCustomValidity(true);
+  const fieldError = error[name];
+
+  setCustomValidity(fieldError ? fieldError.message : true);
+
   return error;
 };

@@ -1,7 +1,7 @@
 import schemaErrorLookup from '../../logic/schemaErrorLookup';
 
 describe('errorsLookup', () => {
-  it('should be able to look up the error', () => {
+  it('be able to look up the error', () => {
     expect(
       schemaErrorLookup<{
         test: {
@@ -105,7 +105,7 @@ describe('errorsLookup', () => {
     });
   });
 
-  it('should return undefined when not found', () => {
+  it('return undefined when not found', () => {
     expect(
       schemaErrorLookup(
         {
@@ -161,7 +161,7 @@ describe('errorsLookup', () => {
     });
   });
 
-  it('should prevent error from reported when field is identified', () => {
+  it('prevent error from reported when field is identified', () => {
     expect(
       schemaErrorLookup<{
         test: {
@@ -233,7 +233,7 @@ describe('errorsLookup', () => {
     });
   });
 
-  it('should find the nearest root error', () => {
+  it('find the nearest root error', () => {
     const errors = {
       test: {
         0: {
@@ -277,6 +277,45 @@ describe('errorsLookup', () => {
     ).toEqual({
       error: { message: 'error', type: 'deepNested' },
       name: 'test.0.nested.0.deepNested',
+    });
+  });
+
+  it('not report a nested error container as the exact-name field error', () => {
+    expect(
+      schemaErrorLookup<{ test: { nested: string } }>(
+        {
+          test: {
+            nested: {
+              type: 'nested',
+              message: 'error',
+            },
+          },
+        } as never,
+        {},
+        'test',
+      ),
+    ).toEqual({
+      name: 'test',
+    });
+  });
+
+  it('resolve an exact-name root error to the .root path', () => {
+    expect(
+      schemaErrorLookup<{ test: string[] }>(
+        {
+          test: {
+            root: {
+              type: 'minLength',
+              message: 'too few',
+            },
+          },
+        } as never,
+        {},
+        'test',
+      ),
+    ).toEqual({
+      error: { type: 'minLength', message: 'too few' },
+      name: 'test.root',
     });
   });
 });

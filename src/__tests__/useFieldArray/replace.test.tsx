@@ -24,7 +24,7 @@ describe('replace', () => {
     i = 0;
   });
 
-  it('should replace fields correctly', () => {
+  it('replace fields correctly', () => {
     let currentFields: any = [];
     const defaultValues: DefaultValues = {
       test: [{ x: '101' }, { x: '102' }, { x: '103' }],
@@ -79,7 +79,7 @@ describe('replace', () => {
       { id: '9', x: '302' },
     ]);
   });
-  it('should not omit keyName when provided', async () => {
+  it('not omit keyName when provided', async () => {
     type FormValues = {
       test: {
         test: string;
@@ -133,7 +133,7 @@ describe('replace', () => {
     ).toBeVisible();
   });
 
-  it('should not omit keyName when provided and defaultValue is empty', async () => {
+  it('not omit keyName when provided and defaultValue is empty', async () => {
     type FormValues = {
       test: {
         test: string;
@@ -198,7 +198,7 @@ describe('replace', () => {
     ).toBeVisible();
   });
 
-  it('should not replace errors state', async () => {
+  it('not replace errors state', async () => {
     const App = () => {
       const {
         control,
@@ -259,7 +259,106 @@ describe('replace', () => {
     expect(await screen.findByText('This is required')).toBeVisible();
   });
 
-  it('should not affect other formState during replace action', () => {
+  it('drop errors for rows removed by replace', async () => {
+    let errorsSnapshot: unknown;
+
+    const App = () => {
+      const {
+        register,
+        control,
+        trigger,
+        formState: { errors },
+      } = useForm({
+        defaultValues: {
+          test: [{ value: '' }, { value: '' }, { value: '' }],
+        },
+      });
+      const { fields, replace } = useFieldArray({
+        control,
+        name: 'test',
+      });
+
+      errorsSnapshot = errors;
+
+      React.useEffect(() => {
+        trigger();
+      }, [trigger]);
+
+      return (
+        <form>
+          {fields.map((field, i) => (
+            <div key={field.id}>
+              <input
+                {...register(`test.${i}.value` as const, {
+                  required: 'This is required',
+                })}
+              />
+              <p>{errors?.test?.[i]?.value?.message as string}</p>
+            </div>
+          ))}
+          <button type={'button'} onClick={() => replace([{ value: 'valid' }])}>
+            replace
+          </button>
+        </form>
+      );
+    };
+
+    render(<App />);
+
+    expect(await screen.findAllByText('This is required')).toHaveLength(3);
+
+    fireEvent.click(screen.getByRole('button'));
+
+    await waitFor(() => {
+      expect((errorsSnapshot as { test?: unknown[] })?.test).toHaveLength(1);
+    });
+  });
+
+  it('drop touched state for rows removed by replace', () => {
+    let touched: unknown;
+
+    const Component = () => {
+      const { register, formState, control } = useForm({
+        defaultValues: {
+          test: [{ value: 'a' }, { value: 'b' }],
+        },
+      });
+      const { fields, replace } = useFieldArray({
+        control,
+        name: 'test',
+      });
+
+      touched = formState.touchedFields;
+
+      return (
+        <form>
+          {fields.map((field, i) => (
+            <input key={field.id} {...register(`test.${i}.value`)} />
+          ))}
+          <button type={'button'} onClick={() => replace([{ value: 'a' }])}>
+            replace
+          </button>
+        </form>
+      );
+    };
+
+    render(<Component />);
+
+    fireEvent.blur(screen.getAllByRole('textbox')[0]);
+    fireEvent.blur(screen.getAllByRole('textbox')[1]);
+
+    expect(touched).toEqual({
+      test: [{ value: true }, { value: true }],
+    });
+
+    fireEvent.click(screen.getByRole('button'));
+
+    expect(touched).toEqual({
+      test: [{ value: true }],
+    });
+  });
+
+  it('not affect other formState during replace action', () => {
     const ControlledInput = ({ index }: { index: number }) => {
       const { field } = useController({
         name: `fieldArray.${index}.firstName`,
@@ -321,7 +420,7 @@ describe('replace', () => {
   });
 
   describe('with resolver', () => {
-    it('should not invoke resolver per register during replace, but run after replace completes', async () => {
+    it('not invoke resolver per register during replace, but run after replace completes', async () => {
       const resolver = jest
         .fn()
         .mockImplementation((values) => ({ values, errors: {} }));

@@ -42,6 +42,30 @@ import { _ } from '../__fixtures__';
     const actual = _ as Path<Foo>;
     type _t = Expect<Equal<typeof actual, 'foo' | 'bar' | 'bar.baz'>>;
   }
+
+  /** it should support paths up to 10 segments deep */ {
+    type D10 = {
+      a: { a: { a: { a: { a: { a: { a: { a: { a: { a: string } } } } } } } } };
+    };
+    // 'a.a.a.a.a.a.a.a.a.a' = 10 segments — must be assignable
+    type _t = Expect<
+      Equal<'a.a.a.a.a.a.a.a.a.a' extends Path<D10> ? true : false, true>
+    >;
+  }
+
+  /** it should not generate paths beyond 10 segments */ {
+    type D11 = {
+      a: {
+        a: {
+          a: { a: { a: { a: { a: { a: { a: { a: string } } } } } } };
+        };
+      };
+    };
+    // 'a.a.a.a.a.a.a.a.a.a.a' = 11 segments — must NOT be in Path<D11>
+    type _t = Expect<
+      Equal<'a.a.a.a.a.a.a.a.a.a.a' extends Path<D11> ? true : false, false>
+    >;
+  }
 }
 
 /** {@link ArrayPath} */ {
@@ -96,6 +120,66 @@ import { _ } from '../__fixtures__';
   /** it should traverse an array */ {
     const actual = _ as PathValue<Depth3Type<boolean>, 'baz.42.value'>;
     type _t = Expect<Equal<typeof actual, boolean>>;
+  }
+
+  /** it should preserve undefined when traversing array elements */ {
+    void (_ as Expect<
+      Equal<
+        PathValue<{ rows: ({ name: string } | undefined)[] }, 'rows.0.name'>,
+        string | undefined
+      >
+    >);
+  }
+
+  /** it should preserve undefined through nested array element paths */ {
+    void (_ as Expect<
+      Equal<
+        PathValue<
+          { rows: readonly ({ details: { name: string } } | undefined)[] },
+          'rows.0.details.name'
+        >,
+        string | undefined
+      >
+    >);
+  }
+
+  /** it should preserve leaf unions when array elements may be undefined */ {
+    void (_ as Expect<
+      Equal<
+        PathValue<
+          { rows: ({ name: string | null } | { name: number } | undefined)[] },
+          'rows.0.name'
+        >,
+        string | number | null | undefined
+      >
+    >);
+  }
+
+  /** it should preserve optional tuple elements */ {
+    void (_ as Expect<
+      Equal<
+        PathValue<{ rows: [{ name: string }?] }, 'rows.0.name'>,
+        string | undefined
+      >
+    >);
+  }
+
+  /** it should not widen defined rest elements from a variadic tuple prefix */ {
+    void (_ as Expect<
+      Equal<
+        PathValue<{ rows: [undefined, ...{ name: string }[]] }, 'rows.1.name'>,
+        string
+      >
+    >);
+    void (_ as Expect<
+      Equal<
+        PathValue<
+          { rows: [{ unrelated: number }?, ...{ name: string }[]] },
+          'rows.1.name'
+        >,
+        string
+      >
+    >);
   }
 
   /** it should apply optional type for optional arrays */ {

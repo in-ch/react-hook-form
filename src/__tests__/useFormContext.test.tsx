@@ -19,7 +19,7 @@ import deepEqual from '../utils/deepEqual';
 import noop from '../utils/noop';
 
 describe('FormProvider', () => {
-  it('should have access to all methods with useFormContext', () => {
+  it('have access to all methods with useFormContext', () => {
     const mockRegister = jest.fn();
     const Test = () => {
       const { register } = useFormContext();
@@ -48,7 +48,7 @@ describe('FormProvider', () => {
     expect(mockRegister).toHaveBeenCalled();
   });
 
-  it('should work correctly with Controller, useWatch, useFormState.', async () => {
+  it('work correctly with Controller, useWatch, useFormState.', async () => {
     const TestComponent = () => {
       const { field } = useController({
         name: 'test',
@@ -95,7 +95,7 @@ describe('FormProvider', () => {
     expect(screen.getByText('Dirty: yes')).toBeVisible();
   });
 
-  it('should not throw type error', () => {
+  it('not throw type error', () => {
     type FormValues = {
       firstName: string;
     };
@@ -123,7 +123,7 @@ describe('FormProvider', () => {
     render(<App />);
   });
 
-  it('should be able to access defaultValues within formState', () => {
+  it('be able to access defaultValues within formState', async () => {
     type FormValues = {
       firstName: string;
       lastName: string;
@@ -177,7 +177,7 @@ describe('FormProvider', () => {
           >
             reset
           </button>
-          <p>{JSON.stringify(defaultValues)}</p>
+          <p>{JSON.stringify(methods.formState.defaultValues)}</p>
         </FormProvider>
       );
     };
@@ -191,9 +191,9 @@ describe('FormProvider', () => {
 
     fireEvent.click(screen.getByRole('button'));
 
-    waitFor(() => {
-      expect(screen.getByText('yes')).not.toBeValid();
-      expect(screen.getByText('context-yes')).not.toBeVisible();
+    await waitFor(() => {
+      expect(screen.queryByText('yes')).not.toBeInTheDocument();
+      expect(screen.queryByText('context-yes')).not.toBeInTheDocument();
 
       screen.getByText(
         JSON.stringify({
@@ -204,7 +204,7 @@ describe('FormProvider', () => {
     });
   });
 
-  it('should report errors correctly', async () => {
+  it('report errors correctly', async () => {
     const Child = () => {
       const {
         formState: { errors },
@@ -240,7 +240,7 @@ describe('FormProvider', () => {
     await waitFor(() => screen.getByText('This is required'));
   });
 
-  it('should report errors correctly with useFieldArray Controller', async () => {
+  it('report errors correctly with useFieldArray Controller', async () => {
     let arrayErrors: (string | undefined)[] = [];
     const Form = () => {
       const {
@@ -326,10 +326,10 @@ describe('FormProvider', () => {
     });
   });
 
-  it('should not rerender unrelated fields when using useController', () => {
+  it('not rerender unrelated fields when using useController', () => {
     const onRender = jest.fn();
 
-    const RenderCounter = React.memo(() => {
+    const RenderCounter = React.memo(function ControlledField() {
       useController({
         name: 'value2',
         defaultValue: '',
@@ -378,10 +378,10 @@ describe('FormProvider', () => {
    * do not cause unnecessary rerenders of children consuming useFormContext.
    * This ensures FormProvider's context value is properly memoized.
    */
-  it('should not do unnecessary rerenders by useFormContext', () => {
+  it('not do unnecessary rerenders by useFormContext', () => {
     const onRender = jest.fn();
 
-    const RenderCounter = React.memo(() => {
+    const RenderCounter = React.memo(function DirtyFields() {
       const {
         formState: { dirtyFields },
       } = useFormContext();
@@ -435,7 +435,7 @@ describe('FormProvider', () => {
     expect(onRender).toHaveBeenCalledTimes(rerendersCount + 1);
   });
 
-  it('should not throw "Cannot update a component while rendering a different component" when swapping FormProviders', () => {
+  it('not throw "Cannot update a component while rendering a different component" when swapping FormProviders', () => {
     const consoleSpy = jest
       .spyOn(console, 'error')
       .mockImplementation(() => {});
@@ -486,7 +486,7 @@ describe('FormProvider', () => {
     consoleSpy.mockRestore();
   });
 
-  it('should not throw "Cannot update a component while rendering a different component" when swapping FormProvider props', () => {
+  it('not throw "Cannot update a component while rendering a different component" when swapping FormProvider props', () => {
     const consoleSpy = jest
       .spyOn(console, 'error')
       .mockImplementation(() => {});
@@ -531,7 +531,45 @@ describe('FormProvider', () => {
     consoleSpy.mockRestore();
   });
 
-  it('should expose setValues from useFormContext', async () => {
+  it('expose resetDefaultValues from useFormContext', async () => {
+    const Child = () => {
+      const { resetDefaultValues, formState } = useFormContext<{
+        name: string;
+      }>();
+
+      return (
+        <button
+          data-testid="reset-default-values"
+          onClick={() => resetDefaultValues({ name: 'updated' })}
+        >
+          {formState.defaultValues?.name}
+        </button>
+      );
+    };
+
+    const App = () => {
+      const methods = useForm<{ name: string }>({
+        defaultValues: { name: 'initial' },
+      });
+      return (
+        <FormProvider {...methods}>
+          <Child />
+        </FormProvider>
+      );
+    };
+
+    render(<App />);
+
+    await act(async () => {
+      fireEvent.click(screen.getByTestId('reset-default-values'));
+    });
+
+    expect(screen.getByTestId('reset-default-values').textContent).toBe(
+      'updated',
+    );
+  });
+
+  it('expose setValues from useFormContext', async () => {
     const Child = () => {
       const { setValues, getValues } = useFormContext<{
         a: string;

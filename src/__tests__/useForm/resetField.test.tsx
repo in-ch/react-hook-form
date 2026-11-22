@@ -1,10 +1,17 @@
 import React from 'react';
-import { fireEvent, render, screen } from '@testing-library/react';
+import {
+  act,
+  fireEvent,
+  render,
+  renderHook,
+  screen,
+} from '@testing-library/react';
 
 import { useForm } from '../../useForm';
+import { useFormState } from '../../useFormState';
 
 describe('resetField', () => {
-  it('should reset input value', () => {
+  it('reset input value', () => {
     const App = () => {
       const { register, resetField } = useForm({
         defaultValues: {
@@ -46,7 +53,7 @@ describe('resetField', () => {
     );
   });
 
-  it('should reset input touched field state', async () => {
+  it('reset input touched field state', async () => {
     const App = () => {
       const {
         register,
@@ -87,7 +94,7 @@ describe('resetField', () => {
     expect(await screen.findByText('noTouched')).toBeVisible();
   });
 
-  it('should reset input dirty field and dirty state', async () => {
+  it('reset input dirty field and dirty state', async () => {
     const App = () => {
       const {
         register,
@@ -133,7 +140,7 @@ describe('resetField', () => {
     expect(screen.getByText('formNotDirty')).toBeVisible();
   });
 
-  it('should reset input error field and isValid state', async () => {
+  it('reset input error field and isValid state', async () => {
     const App = () => {
       const {
         register,
@@ -183,7 +190,7 @@ describe('resetField', () => {
     expect(screen.getByText('noError')).toBeVisible();
   });
 
-  it('should reset input file to empty string only', () => {
+  it('reset input file to empty string only', () => {
     const getValuesFn = jest.fn();
 
     const App = () => {
@@ -227,8 +234,75 @@ describe('resetField', () => {
     expect(getValuesFn).toHaveBeenCalledWith({ test: '' });
   });
 
+  it('notify a memoized field-scoped subscriber after an unrelated field validated via onChange', async () => {
+    const BWatcher = React.memo(function TouchedField({
+      control,
+    }: {
+      control: any;
+    }) {
+      const { touchedFields } = useFormState({
+        control,
+        name: 'b',
+        exact: true,
+      });
+      return <p>b-touched:{String(!!touchedFields.b)}</p>;
+    });
+
+    const App = () => {
+      const { register, control, resetField } = useForm({
+        mode: 'onChange',
+        defaultValues: { a: '', b: '' },
+      });
+
+      return (
+        <div>
+          <input {...register('a', { required: true })} />
+          <input {...register('b')} />
+          <BWatcher control={control} />
+          <button
+            type={'button'}
+            onClick={() => resetField('b', { keepTouched: false })}
+          >
+            resetB
+          </button>
+        </div>
+      );
+    };
+
+    render(<App />);
+
+    // Touch field 'b' so there is a real touched:true -> false transition
+    // to observe.
+    await act(async () => {
+      fireEvent.blur(screen.getAllByRole('textbox')[1]);
+    });
+    expect(await screen.findByText('b-touched:true')).toBeVisible();
+
+    // Drive an unrelated field 'a' through onChange validation. Before the
+    // fix, this permanently leaked `name: 'a'` into `_formState`, which
+    // caused later notifications that don't set their own `name` (like
+    // resetField's) to inherit it and get gated out for any other
+    // field-scoped subscriber.
+    await act(async () => {
+      fireEvent.input(screen.getAllByRole('textbox')[0], {
+        target: { value: 'x' },
+      });
+    });
+    await act(async () => {
+      fireEvent.input(screen.getAllByRole('textbox')[0], {
+        target: { value: '' },
+      });
+    });
+
+    await act(async () => {
+      fireEvent.click(screen.getByRole('button', { name: 'resetB' }));
+    });
+
+    expect(await screen.findByText('b-touched:false')).toBeVisible();
+  });
+
   describe('when provided with options', () => {
-    it('should update input value and its defaultValue', () => {
+    it('update input value and its defaultValue', () => {
       const App = () => {
         const { register, resetField } = useForm({
           defaultValues: {
@@ -272,7 +346,7 @@ describe('resetField', () => {
       );
     });
 
-    it('should keep touched field state', async () => {
+    it('keep touched field state', async () => {
       const App = () => {
         const {
           register,
@@ -313,7 +387,7 @@ describe('resetField', () => {
       expect(await screen.findByText('touched')).toBeVisible();
     });
 
-    it('should keep dirty field and isDirty state', async () => {
+    it('keep dirty field and isDirty state', async () => {
       const App = () => {
         const {
           register,
@@ -359,7 +433,7 @@ describe('resetField', () => {
       expect(screen.getByText('formDirty')).toBeVisible();
     });
 
-    it('should skip reset error field and isValid state', async () => {
+    it('skip reset error field and isValid state', async () => {
       const App = () => {
         const {
           register,
@@ -409,7 +483,7 @@ describe('resetField', () => {
       expect(screen.getByText('error')).toBeVisible();
     });
 
-    it('should work with objects as defaultValue', async () => {
+    it('work with objects as defaultValue', async () => {
       const App = () => {
         const {
           register,
@@ -465,4 +539,238 @@ describe('resetField', () => {
       expect(await screen.findByText('isDirty')).toBeVisible();
     });
   });
+
+  it('update isValid state for a subscribe only consumer', async () => {
+    const App = () => {
+      const { register, resetField, subscribe } = useForm({
+        defaultValues: {
+          test: 'test',
+        },
+        mode: 'onChange',
+      });
+      const [isValid, setIsValid] = React.useState(false);
+
+      React.useEffect(() => {
+        return subscribe({
+          formState: {
+            isValid: true,
+          },
+          callback: (formState) => setIsValid(formState.isValid),
+        });
+      }, [subscribe]);
+
+      return (
+        <form>
+          <input {...register('test', { required: true })} />
+          <p>{isValid ? 'valid' : 'NotValid'}</p>
+          <button
+            type={'button'}
+            onClick={() => {
+              resetField('test');
+            }}
+          >
+            reset
+          </button>
+        </form>
+      );
+    };
+
+    render(<App />);
+
+    fireEvent.change(screen.getByRole('textbox'), {
+      target: {
+        value: '',
+      },
+    });
+
+    expect(await screen.findByText('NotValid')).toBeVisible();
+
+    fireEvent.click(screen.getByRole('button'));
+
+    expect(await screen.findByText('valid')).toBeVisible();
+  });
+
+  it('clear stale validating state when reset does not revalidate', async () => {
+    let resolveValidate: (value: boolean) => void;
+
+    const App = () => {
+      const {
+        register,
+        trigger,
+        resetField,
+        getFieldState,
+        formState: { isValidating, validatingFields },
+      } = useForm<{ test: string }>();
+
+      return (
+        <div>
+          <input
+            {...register('test', {
+              validate: async () =>
+                new Promise<boolean>((resolve) => {
+                  resolveValidate = resolve;
+                }),
+            })}
+          />
+          <p>status:{isValidating ? 'validating' : 'idle'}</p>
+          <p>validatingFields:{Object.keys(validatingFields).join(',')}</p>
+          <p>
+            fieldValidating:
+            {getFieldState('test').isValidating ? 'yes' : 'no'}
+          </p>
+          <button type="button" onClick={() => resetField('test')}>
+            resetField
+          </button>
+          <button type="button" onClick={() => trigger('test')}>
+            trigger
+          </button>
+        </div>
+      );
+    };
+
+    render(<App />);
+
+    // default mode: resetField's internal setValue does not start a new
+    // validation pass, so the trigger-started entry would leak without a fix
+    fireEvent.click(screen.getByRole('button', { name: 'trigger' }));
+
+    expect(await screen.findByText('status:validating')).toBeVisible();
+    expect(screen.getByText('validatingFields:test')).toBeInTheDocument();
+
+    fireEvent.click(screen.getByRole('button', { name: 'resetField' }));
+
+    expect(await screen.findByText('status:idle')).toBeVisible();
+    expect(screen.getByText('validatingFields:')).toBeInTheDocument();
+    expect(screen.getByText('fieldValidating:no')).toBeInTheDocument();
+
+    // the stale in-flight validator from before resetField finally settles
+    await act(async () => {
+      resolveValidate(true);
+    });
+
+    expect(screen.getByText('status:idle')).toBeInTheDocument();
+    expect(screen.getByText('validatingFields:')).toBeInTheDocument();
+  });
+
+  it('cancel pending delayError timers for nested fields when their parent is reset', async () => {
+    jest.useFakeTimers();
+
+    const message = 'too long.';
+
+    const App = () => {
+      const {
+        register,
+        resetField,
+        formState: { errors },
+      } = useForm<{ parent: { child: string } }>({
+        delayError: 500,
+        mode: 'onChange',
+      });
+
+      return (
+        <div>
+          <input {...register('parent.child', { maxLength: 4 })} />
+          <button type="button" onClick={() => resetField('parent')}>
+            reset
+          </button>
+          {errors.parent?.child && <p>{message}</p>}
+        </div>
+      );
+    };
+
+    render(<App />);
+
+    // Schedule a delayed error, then reset the parent before the delay elapses.
+    await act(async () => {
+      fireEvent.change(screen.getByRole('textbox'), {
+        target: { value: '123456' },
+      });
+    });
+
+    fireEvent.click(screen.getByRole('button'));
+
+    await act(async () => {
+      jest.advanceTimersByTime(500);
+    });
+
+    expect(screen.queryByText(message)).not.toBeInTheDocument();
+
+    jest.useRealTimers();
+  });
+
+  it('not cancel a pending delayError timer for a field that only shares a name prefix with the reset field', async () => {
+    jest.useFakeTimers();
+
+    const message = 'too long.';
+
+    const App = () => {
+      const {
+        register,
+        resetField,
+        formState: { errors },
+      } = useForm<{ test: string; test1: string }>({
+        delayError: 500,
+        mode: 'onChange',
+      });
+
+      return (
+        <div>
+          <input {...register('test', { maxLength: 4 })} />
+          <input {...register('test1', { maxLength: 4 })} />
+          <button type="button" onClick={() => resetField('test')}>
+            reset
+          </button>
+          {errors.test1 && <p>{message}</p>}
+        </div>
+      );
+    };
+
+    render(<App />);
+
+    await act(async () => {
+      fireEvent.change(screen.getAllByRole('textbox')[1], {
+        target: { value: '123456' },
+      });
+    });
+
+    fireEvent.click(screen.getByRole('button'));
+
+    await act(async () => {
+      jest.advanceTimersByTime(500);
+    });
+
+    expect(screen.getByText(message)).toBeVisible();
+
+    jest.useRealTimers();
+  });
+  it.each([
+    ['number', 0, 10],
+    ['boolean', false, true],
+    ['string', '', 'hello'],
+  ])(
+    'correctly update isDirty when resetting a field with falsy defaultValue (%s)',
+    (_, falsyDefault, initialDefault) => {
+      const { result } = renderHook(() =>
+        useForm<{ test: unknown }>({
+          defaultValues: { test: initialDefault },
+        }),
+      );
+
+      result.current.register('test');
+      result.current.formState.isDirty;
+
+      act(() => {
+        result.current.setValue('test', 'dirty-value', { shouldDirty: true });
+      });
+
+      expect(result.current.formState.isDirty).toBe(true);
+
+      act(() => {
+        result.current.resetField('test', { defaultValue: falsyDefault });
+      });
+
+      expect(result.current.getValues('test')).toBe(falsyDefault);
+      expect(result.current.formState.isDirty).toBe(false);
+    },
+  );
 });

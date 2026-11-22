@@ -11,11 +11,20 @@ import {
 import { VALIDATION_MODE } from '../../constants';
 import { Controller } from '../../controller';
 import type { Control, DeepMap, FieldError } from '../../types';
+import { useController } from '../../useController';
 import { useFieldArray } from '../../useFieldArray';
 import { useForm } from '../../useForm';
+import { useFormState } from '../../useFormState';
+import { useWatch } from '../../useWatch';
 import noop from '../../utils/noop';
 
-jest.useFakeTimers();
+beforeEach(() => {
+  jest.useFakeTimers();
+});
+
+afterEach(() => {
+  jest.useRealTimers();
+});
 
 let i = 0;
 
@@ -26,7 +35,62 @@ describe('remove', () => {
     i = 0;
   });
 
-  it('should update isDirty formState when item removed', () => {
+  it('not copy deleted fields onto a surviving row rendered from useWatch', async () => {
+    type FormValues = {
+      items: {
+        id: string;
+        title?: string;
+        description?: { safeString: string };
+      }[];
+    };
+    const remaining = { id: 'b', description: { safeString: 'A description' } };
+    let getValues: () => FormValues;
+
+    const App = () => {
+      const methods = useForm<FormValues>({
+        defaultValues: {
+          items: [{ id: 'a', title: 'Test Position' }, remaining],
+        },
+      });
+      getValues = methods.getValues;
+      const { remove } = useFieldArray({
+        control: methods.control,
+        name: 'items',
+      });
+      const items = useWatch({ control: methods.control, name: 'items' });
+
+      return (
+        <>
+          {items.map((item, index) => (
+            <Controller
+              key={item.id}
+              control={methods.control}
+              name={
+                item.description
+                  ? `items.${index}.description.safeString`
+                  : `items.${index}.title`
+              }
+              render={({ field }) => <input {...field} />}
+            />
+          ))}
+          <button onClick={() => remove(0)}>remove</button>
+        </>
+      );
+    };
+
+    render(<App />);
+    await act(async () => {
+      fireEvent.click(screen.getByRole('button', { name: 'remove' }));
+    });
+
+    await waitFor(() => {
+      expect(getValues!()).toEqual({ items: [remaining] });
+      expect(screen.getAllByRole('textbox')).toHaveLength(1);
+      expect(screen.getByRole('textbox')).toHaveValue('A description');
+    });
+  });
+
+  it('update isDirty formState when item removed', async () => {
     let formState: any;
     const Component = () => {
       const {
@@ -75,16 +139,20 @@ describe('remove', () => {
 
     expect(formState.isDirty).toBeFalsy();
 
-    fireEvent.click(screen.getByRole('button', { name: /append/i }));
+    await act(async () => {
+      fireEvent.click(screen.getByRole('button', { name: /append/i }));
+    });
 
-    expect(formState.isDirty).toBeTruthy();
+    await waitFor(() => expect(formState.isDirty).toBeTruthy());
 
-    fireEvent.click(screen.getAllByRole('button', { name: /remove/i })[1]);
+    await act(async () => {
+      fireEvent.click(screen.getAllByRole('button', { name: /remove/i })[1]);
+    });
 
-    expect(formState.isDirty).toBeFalsy();
+    await waitFor(() => expect(formState.isDirty).toBeFalsy());
   });
 
-  it('should not mark unrelated fields as dirty when removing from field array', async () => {
+  it('not mark unrelated fields as dirty when removing from field array', async () => {
     let dirtyInputs = {};
     const Component = () => {
       const {
@@ -124,7 +192,9 @@ describe('remove', () => {
 
     render(<Component />);
 
-    fireEvent.click(screen.getByRole('button', { name: /remove0/i }));
+    await act(async () => {
+      fireEvent.click(screen.getByRole('button', { name: /remove0/i }));
+    });
 
     await waitFor(() => {
       expect(dirtyInputs).not.toHaveProperty('name');
@@ -132,7 +202,7 @@ describe('remove', () => {
     });
   });
 
-  it('should update isValid formState when item removed', async () => {
+  it('update isValid formState when item removed', async () => {
     let formState: any;
     const Component = () => {
       const {
@@ -185,16 +255,20 @@ describe('remove', () => {
 
     render(<Component />);
 
-    fireEvent.click(screen.getByRole('button', { name: /append/i }));
+    await act(async () => {
+      fireEvent.click(screen.getByRole('button', { name: /append/i }));
+    });
 
     expect(await screen.findByText('notValid')).toBeVisible();
 
-    fireEvent.click(screen.getAllByRole('button', { name: /remove/i })[1]);
+    await act(async () => {
+      fireEvent.click(screen.getAllByRole('button', { name: /remove/i })[1]);
+    });
 
     expect(await screen.findByText('isValid')).toBeVisible();
   });
 
-  it('should remove field according index', () => {
+  it('remove field according index', async () => {
     const { result } = renderHook(() => {
       const { control } = useForm({
         defaultValues: {
@@ -207,24 +281,24 @@ describe('remove', () => {
       });
     });
 
-    act(() => {
+    await act(async () => {
       result.current.append({ value: 'test' });
     });
 
-    act(() => {
+    await act(async () => {
       result.current.remove(1);
     });
 
     expect(result.current.fields).toEqual([{ id: '0', value: 'default' }]);
 
-    act(() => {
+    await act(async () => {
       result.current.remove(0);
     });
 
     expect(result.current.fields).toEqual([]);
   });
 
-  it('should remove all field', () => {
+  it('remove all field', async () => {
     const { result } = renderHook(() => {
       const { control } = useForm({
         defaultValues: {
@@ -237,18 +311,18 @@ describe('remove', () => {
       });
     });
 
-    act(() => {
+    await act(async () => {
       result.current.append({ value: 'test' });
     });
 
-    act(() => {
+    await act(async () => {
       result.current.remove();
     });
 
     expect(result.current.fields).toEqual([]);
   });
 
-  it('should remove specific fields when index is array', () => {
+  it('remove specific fields when index is array', () => {
     const { result } = renderHook(() => {
       const { control } = useForm({
         defaultValues: {
@@ -320,7 +394,7 @@ describe('remove', () => {
     },
   );
 
-  it('should remove values from formState.touchedFields', () => {
+  it('remove values from formState.touchedFields', () => {
     let touched: any;
 
     const Component = () => {
@@ -377,7 +451,7 @@ describe('remove', () => {
     expect(touched).toEqual({ test: [] });
   });
 
-  it('should remove specific field if isValid is true', async () => {
+  it('remove specific field if isValid is true', async () => {
     const Component = () => {
       const { register, formState, control } = useForm({
         mode: VALIDATION_MODE.onChange,
@@ -441,7 +515,7 @@ describe('remove', () => {
     expect(await screen.findByText('valid')).toBeVisible();
   });
 
-  it('should remove all field if isValid is true', async () => {
+  it('remove all field if isValid is true', async () => {
     let isValid = false;
     const Component = () => {
       const { register, formState, control } = useForm({
@@ -488,7 +562,7 @@ describe('remove', () => {
     await waitFor(() => expect(isValid).toBe(true));
   });
 
-  it('should remove error', async () => {
+  it('remove error', async () => {
     let errors: any;
     const Component = () => {
       const {
@@ -544,7 +618,7 @@ describe('remove', () => {
     expect(errors.test).toBeUndefined();
   });
 
-  it('should remove nested field array error', async () => {
+  it('remove nested field array error', async () => {
     type FormValues = {
       test: {
         nested: {
@@ -643,18 +717,22 @@ describe('remove', () => {
     fireEvent.click(screen.getByRole('button', { name: /submit/i }));
     expect(await screen.findByTestId('nested-error')).toBeVisible();
 
-    fireEvent.click(screen.getByRole('button', { name: /nested delete/i }));
+    await act(async () => {
+      fireEvent.click(screen.getByRole('button', { name: /nested delete/i }));
+    });
     await waitFor(() =>
       expect(screen.queryByTestId('nested-error')).not.toBeInTheDocument(),
     );
     expect(await screen.findByText('Valid: true')).toBeVisible();
 
-    fireEvent.click(screen.getByRole('button', { name: /nested append/i }));
+    await act(async () => {
+      fireEvent.click(screen.getByRole('button', { name: /nested append/i }));
+    });
 
     expect(screen.queryByTestId('nested-error')).not.toBeInTheDocument();
   });
 
-  it('should trigger reRender when user is watching the all field array', () => {
+  it('trigger reRender when user is watching the all field array', () => {
     const watched: any[] = [];
     const Component = () => {
       const { register, watch, control } = useForm<{
@@ -699,7 +777,7 @@ describe('remove', () => {
     ]);
   });
 
-  it('should return watched value with watch API', async () => {
+  it('return watched value with watch API', async () => {
     const renderedItems: any = [];
     const Component = () => {
       const { watch, register, control } = useForm<{
@@ -765,7 +843,7 @@ describe('remove', () => {
     );
   });
 
-  it('should remove dirtyFields fields with nested field inputs', () => {
+  it('remove dirtyFields fields with nested field inputs', () => {
     const { result } = renderHook(() => {
       const { register, formState, control } = useForm({
         defaultValues: {
@@ -802,7 +880,7 @@ describe('remove', () => {
     expect(result.current.formState.dirtyFields).toEqual({});
   });
 
-  it('should remove Controller by index without error', () => {
+  it('remove Controller by index without error', () => {
     const Component = () => {
       const { control, handleSubmit } = useForm<{
         test: {
@@ -865,7 +943,7 @@ describe('remove', () => {
     fireEvent.click(screen.getAllByRole('button', { name: 'delete' })[0]);
   });
 
-  it("should not reset Controller's value during remove when Field Array name is already registered", async () => {
+  it("not reset Controller's value during remove when Field Array name is already registered", async () => {
     function Component() {
       const { control, handleSubmit } = useForm({
         defaultValues: {
@@ -922,8 +1000,65 @@ describe('remove', () => {
     ).toEqual('111');
   });
 
+  it('drop dirty state for removed rows so a re-added row matching defaults is pristine', async () => {
+    type FormValues = {
+      items: { value: string }[];
+    };
+
+    const App = () => {
+      const methods = useForm<FormValues>({
+        defaultValues: { items: [{ value: 'x' }] },
+      });
+      const { fields, append, remove } = useFieldArray({
+        control: methods.control,
+        name: 'items',
+      });
+      // Track only the form-level flag (e.g. a Save button), the way most
+      // apps do — per-field state below is read via getFieldState.
+      const { isDirty } = useFormState({ control: methods.control });
+      const fieldDirty = fields.length
+        ? methods.getFieldState('items.0.value').isDirty
+        : false;
+
+      return (
+        <form>
+          {fields.map((field, index) => (
+            <Controller
+              key={field.id}
+              control={methods.control}
+              name={`items.${index}.value` as const}
+              render={({ field: { ...rest } }) => <input {...rest} />}
+            />
+          ))}
+          <p>{`form-dirty:${isDirty}`}</p>
+          <p>{`field-dirty:${fieldDirty}`}</p>
+          <button type="button" onClick={() => remove(0)}>
+            remove
+          </button>
+          <button type="button" onClick={() => append({ value: 'x' })}>
+            append
+          </button>
+        </form>
+      );
+    };
+
+    render(<App />);
+
+    fireEvent.change(screen.getByRole('textbox'), {
+      target: { value: 'changed' },
+    });
+
+    expect(screen.getByText('field-dirty:true')).toBeVisible();
+
+    fireEvent.click(screen.getByText('remove'));
+    fireEvent.click(screen.getByText('append'));
+
+    expect(screen.getByText('form-dirty:false')).toBeVisible();
+    expect(screen.getByText('field-dirty:false')).toBeVisible();
+  });
+
   describe('with resolver', () => {
-    it('should invoke resolver when formState.isValid true', async () => {
+    it('invoke resolver when formState.isValid true', async () => {
       const resolver = jest.fn().mockReturnValue({});
 
       const { result } = renderHook(() => {
@@ -953,7 +1088,7 @@ describe('remove', () => {
       );
     });
 
-    it('should not invoke resolver when formState.isValid false', () => {
+    it('not invoke resolver when formState.isValid false', () => {
       const resolver = jest.fn().mockReturnValue({});
 
       const { result } = renderHook(() => {
@@ -975,7 +1110,7 @@ describe('remove', () => {
       expect(resolver).toHaveBeenCalled();
     });
 
-    it('should remove the first index correctly', async () => {
+    it('remove the first index correctly', async () => {
       let output: unknown;
 
       type FormValues = {
@@ -1068,9 +1203,51 @@ describe('remove', () => {
         }),
       );
     });
+
+    it('always place array root validation error under root key after remove', async () => {
+      const arrayRootError = {
+        type: 'min',
+        message: 'Need at least 1 item',
+      };
+
+      const resolver = jest.fn().mockImplementation((values) => {
+        if (!values.test?.length) {
+          return { values: {}, errors: { test: arrayRootError } };
+        }
+        return { values, errors: {} };
+      });
+
+      const { result } = renderHook(() => {
+        const { control, formState } = useForm({
+          mode: VALIDATION_MODE.onChange,
+          resolver,
+          defaultValues: { test: [{ value: 'a' }] },
+        });
+        const { remove } = useFieldArray({ control, name: 'test' });
+        return { formState, remove };
+      });
+
+      result.current.formState.errors;
+
+      await act(async () => {
+        result.current.remove(0);
+      });
+
+      await waitFor(() => {
+        const errors = result.current.formState.errors as Record<string, any>;
+        expect(errors.test?.root).toEqual(
+          expect.objectContaining({
+            type: 'min',
+            message: 'Need at least 1 item',
+          }),
+        );
+        expect(errors.test?.type).toBeUndefined();
+        expect(errors.test?.message).toBeUndefined();
+      });
+    });
   });
 
-  it('should remove correct value with async reset', async () => {
+  it('remove correct value with async reset', async () => {
     let output = {};
 
     function App() {
@@ -1149,7 +1326,7 @@ describe('remove', () => {
     );
   });
 
-  it('should not omit keyName when provided', async () => {
+  it('not omit keyName when provided', async () => {
     type FormValues = {
       test: {
         test: string;
@@ -1203,7 +1380,7 @@ describe('remove', () => {
     ).toBeVisible();
   });
 
-  it('should not omit keyName when provided and defaultValue is empty', async () => {
+  it('not omit keyName when provided and defaultValue is empty', async () => {
     type FormValues = {
       test: {
         test: string;
@@ -1268,7 +1445,7 @@ describe('remove', () => {
     ).toBeVisible();
   });
 
-  it('should not leave empty objects in watched values when removing from field array with values prop', async () => {
+  it('not leave empty objects in watched values when removing from field array with values prop', async () => {
     type FormValues = {
       items: { name: string; text: string }[];
     };
@@ -1380,7 +1557,7 @@ describe('remove', () => {
     }
   });
 
-  it('should not re-insert removed items when using values prop with keepDirtyValues', async () => {
+  it('not re-insert removed items when using values prop with keepDirtyValues', async () => {
     type FormValues = {
       test: { value?: string }[];
     };
@@ -1459,5 +1636,299 @@ describe('remove', () => {
     fireEvent.click(screen.getByRole('button', { name: 'append' }));
     expect(screen.getByTestId('fields-count')).toHaveTextContent('1');
     expect(screen.getAllByRole('textbox')).toHaveLength(1);
+  });
+
+  it('not resize nested arrays when index-keyed children render the pre-remove arrangement', async () => {
+    type NestedFormValues = {
+      steps: { approvers: { value: string }[] }[];
+    };
+
+    let getValues: () => NestedFormValues = () => ({ steps: [] });
+
+    const Step = ({
+      index,
+      control,
+    }: {
+      index: number;
+      control: Control<NestedFormValues>;
+    }) => {
+      const step = useWatch({ control, name: `steps.${index}` as const });
+
+      return (
+        <div>
+          {(step?.approvers ?? []).map((_: unknown, j: number) => (
+            <Controller
+              key={j}
+              control={control}
+              name={`steps.${index}.approvers.${j}.value` as const}
+              render={({ field }) => <input {...field} />}
+            />
+          ))}
+        </div>
+      );
+    };
+
+    const App = () => {
+      const methods = useForm<NestedFormValues>({
+        defaultValues: {
+          steps: [
+            { approvers: [{ value: 'a1' }] },
+            { approvers: [{ value: 'b1' }, { value: 'b2' }] },
+            { approvers: [{ value: 'c1' }] },
+          ],
+        },
+      });
+      getValues = methods.getValues;
+      const { fields, remove } = useFieldArray({
+        control: methods.control,
+        name: 'steps',
+      });
+
+      return (
+        <div>
+          {fields.map((_, i) => (
+            <Step key={i} index={i} control={methods.control} />
+          ))}
+          <button type="button" onClick={() => remove(0)}>
+            remove
+          </button>
+        </div>
+      );
+    };
+
+    render(<App />);
+
+    fireEvent.click(screen.getByRole('button', { name: 'remove' }));
+    await act(async () => {});
+
+    expect(
+      getValues().steps.map((step) => (step.approvers ?? []).length),
+    ).toEqual([2, 1]);
+  });
+
+  it('not resurrect removed items when the list itself renders from useWatch', async () => {
+    type NestedFormValues = {
+      steps: { approvers: { value: string }[] }[];
+    };
+
+    let getValues: () => NestedFormValues = () => ({ steps: [] });
+
+    const Step = ({
+      index,
+      control,
+    }: {
+      index: number;
+      control: Control<NestedFormValues>;
+    }) => {
+      const step = useWatch({ control, name: `steps.${index}` as const });
+
+      return (
+        <div>
+          {(step?.approvers ?? []).map((_: unknown, j: number) => (
+            <Controller
+              key={j}
+              control={control}
+              name={`steps.${index}.approvers.${j}.value` as const}
+              render={({ field }) => <input {...field} />}
+            />
+          ))}
+        </div>
+      );
+    };
+
+    const App = () => {
+      const methods = useForm<NestedFormValues>({
+        defaultValues: {
+          steps: [
+            { approvers: [{ value: 'a1' }] },
+            { approvers: [{ value: 'b1' }, { value: 'b2' }] },
+            { approvers: [{ value: 'c1' }] },
+          ],
+        },
+      });
+      getValues = methods.getValues;
+      const { remove } = useFieldArray({
+        control: methods.control,
+        name: 'steps',
+      });
+      const steps = useWatch({ control: methods.control, name: 'steps' }) || [];
+
+      return (
+        <div>
+          {steps.map((_, i) => (
+            <Step key={i} index={i} control={methods.control} />
+          ))}
+          <button type="button" onClick={() => remove(0)}>
+            remove
+          </button>
+        </div>
+      );
+    };
+
+    render(<App />);
+
+    fireEvent.click(screen.getByRole('button', { name: 'remove' }));
+    await act(async () => {});
+
+    expect(
+      getValues().steps.map((step) => (step.approvers ?? []).length),
+    ).toEqual([2, 1]);
+  });
+
+  it('treat a controlled field staged at a vacated index as the stale arrangement', async () => {
+    type FormValues = { test: { value: string }[] };
+
+    let getValues: () => unknown = () => ({});
+
+    const StagedInput = ({ control }: { control: Control<FormValues> }) => {
+      const { field } = useController({
+        control,
+        name: 'test.2.value',
+        defaultValue: 'replacement',
+      });
+      return <input {...field} />;
+    };
+
+    const App = () => {
+      const methods = useForm<FormValues>({
+        defaultValues: {
+          test: [{ value: 't0' }, { value: 't1' }, { value: 't2' }],
+        },
+      });
+      getValues = methods.getValues;
+      const { fields, remove } = useFieldArray({
+        control: methods.control,
+        name: 'test',
+      });
+      const [staged, setStaged] = React.useState(false);
+
+      return (
+        <div>
+          {fields.map((field, i) => (
+            <Controller
+              key={field.id}
+              control={methods.control}
+              name={`test.${i}.value` as const}
+              render={({ field }) => <input {...field} />}
+            />
+          ))}
+          {staged && <StagedInput control={methods.control} />}
+          <button
+            type="button"
+            onClick={() => {
+              remove(2);
+              setStaged(true);
+            }}
+          >
+            remove
+          </button>
+        </div>
+      );
+    };
+
+    render(<App />);
+
+    fireEvent.click(screen.getByRole('button', { name: 'remove' }));
+    await act(async () => {});
+
+    expect(getValues()).toEqual({
+      test: [{ value: 't0' }, { value: 't1' }],
+    });
+  });
+
+  // `errors` and `dirtyFields` are re-indexed by _setFieldArray whether or not
+  // anything is subscribed to them, but `touchedFields` was gated behind
+  // _isTracked('touchedFields'). Touched flags are recorded on blur regardless
+  // of subscription, and getFieldState() reads them, so an unsubscribed form
+  // ended up reporting the touched flag against the wrong row after remove().
+  describe('touched fields re-indexing', () => {
+    const Component = ({ subscribe }: { subscribe: boolean }) => {
+      const { register, control, getFieldState, formState } = useForm<{
+        test: { value: string }[];
+      }>({
+        defaultValues: { test: [{ value: 'a' }, { value: 'b' }] },
+      });
+      const { fields, remove } = useFieldArray({ control, name: 'test' });
+
+      if (subscribe) {
+        void formState.touchedFields;
+      }
+
+      return (
+        <div>
+          {fields.map((field, i) => (
+            <input
+              key={field.id}
+              {...register(`test.${i}.value` as const)}
+              placeholder={`test-${i}`}
+            />
+          ))}
+          <button type="button" onClick={() => remove(0)}>
+            remove
+          </button>
+          <p>{`touched0:${
+            getFieldState('test.0.value').isTouched ? 'yes' : 'no'
+          }`}</p>
+        </div>
+      );
+    };
+
+    const touchSecondRowThenRemoveFirst = async () => {
+      await act(async () => {
+        fireEvent.blur(screen.getByPlaceholderText('test-1'), {
+          target: { value: 'b' },
+        });
+      });
+
+      await act(async () => {
+        fireEvent.click(screen.getByRole('button', { name: 'remove' }));
+      });
+    };
+
+    it('move the touched flag onto the remaining row when subscribed', async () => {
+      render(<Component subscribe={true} />);
+
+      await touchSecondRowThenRemoveFirst();
+
+      expect(screen.getByText(/^touched0:/).textContent).toEqual(
+        'touched0:yes',
+      );
+    });
+
+    it('move the touched flag onto the remaining row when not subscribed', async () => {
+      render(<Component subscribe={false} />);
+
+      await touchSecondRowThenRemoveFirst();
+
+      expect(screen.getByText(/^touched0:/).textContent).toEqual(
+        'touched0:yes',
+      );
+    });
+  });
+
+  it('ignore duplicated indexes and keep the passed indexes unchanged', () => {
+    const { result } = renderHook(() => {
+      const form = useForm<{ test: { value: string }[] }>({
+        defaultValues: {
+          test: [
+            { value: 'a' },
+            { value: 'b' },
+            { value: 'c' },
+            { value: 'd' },
+          ],
+        },
+      });
+      const fieldArray = useFieldArray({ control: form.control, name: 'test' });
+
+      return { form, fieldArray };
+    });
+    const indexes = [3, 1, 1];
+
+    act(() => result.current.fieldArray.remove(indexes));
+
+    expect(indexes).toEqual([3, 1, 1]);
+    expect(result.current.form.getValues()).toEqual({
+      test: [{ value: 'a' }, { value: 'c' }],
+    });
   });
 });

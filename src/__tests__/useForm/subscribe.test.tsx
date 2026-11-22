@@ -1,12 +1,18 @@
 import React from 'react';
-import { fireEvent, render, screen, waitFor } from '@testing-library/react';
+import {
+  act,
+  fireEvent,
+  render,
+  screen,
+  waitFor,
+} from '@testing-library/react';
 
-import type { UseFormSubscribe } from '../../types';
+import type { Resolver, UseFormSubscribe } from '../../types';
 import { useForm } from '../../useForm';
 import { useFormState } from '../../useFormState';
 
 describe('subscribe', () => {
-  it('should properly handle multiple subscriptions', async () => {
+  it('properly handle multiple subscriptions', async () => {
     const callbackFn1 = jest.fn();
     const callbackFn2 = jest.fn();
 
@@ -71,7 +77,7 @@ describe('subscribe', () => {
     expect(callbackFn1).toHaveBeenCalledTimes(1);
   });
 
-  it('should only react to formState changes it subscribes to', async () => {
+  it('only react to formState changes it subscribes to', async () => {
     const callbackFn = jest.fn();
 
     const App = () => {
@@ -121,7 +127,7 @@ describe('subscribe', () => {
     expect(callbackFn).toHaveBeenCalledTimes(2);
   });
 
-  it('should allow subscribing to submit state updates', async () => {
+  it('allow subscribing to submit state updates', async () => {
     const callbackFn = jest.fn();
 
     const App = () => {
@@ -158,7 +164,7 @@ describe('subscribe', () => {
     );
   });
 
-  it('should not call subscribe callback when setValue is called with the same value and shouldDirty option', async () => {
+  it('not call subscribe callback when setValue is called with the same value and shouldDirty option', async () => {
     const callbackFn = jest.fn();
 
     const App = () => {
@@ -197,7 +203,7 @@ describe('subscribe', () => {
     expect(callbackFn).not.toHaveBeenCalled();
   });
 
-  it('should not call subscribe callback when setValue is called with the same value and shouldTouch/shouldValidate options', async () => {
+  it('not call subscribe callback when setValue is called with the same value and shouldTouch/shouldValidate options', async () => {
     const callbackFn = jest.fn();
 
     const App = () => {
@@ -241,7 +247,7 @@ describe('subscribe', () => {
     expect(callbackFn).not.toHaveBeenCalled();
   });
 
-  it('should call subscribe callback with a values snapshot', async () => {
+  it('call subscribe callback with a values snapshot', async () => {
     const callbackFn = jest.fn();
     let capturedValues: Record<string, unknown> | undefined;
 
@@ -280,5 +286,587 @@ describe('subscribe', () => {
 
     expect(callbackFn).toHaveBeenCalledTimes(1);
     expect(capturedValues).toEqual({ test: 'hello' });
+  });
+
+  it('not leak the last changed field name into a reset triggered callback', async () => {
+    const names: (string | undefined)[] = [];
+
+    const App = () => {
+      const { register, subscribe, reset } = useForm({
+        defaultValues: {
+          firstName: '',
+        },
+      });
+
+      React.useEffect(() => {
+        return subscribe({
+          formState: {
+            values: true,
+          },
+          callback: ({ name }) => {
+            names.push(name);
+          },
+        });
+      }, [subscribe]);
+
+      return (
+        <form>
+          <input {...register('firstName')} />
+          <button type="button" onClick={() => reset({ firstName: '' })}>
+            reset
+          </button>
+        </form>
+      );
+    };
+
+    render(<App />);
+
+    fireEvent.click(screen.getByRole('button', { name: 'reset' }));
+    fireEvent.change(screen.getByRole('textbox'), {
+      target: { value: 'a' },
+    });
+    fireEvent.click(screen.getByRole('button', { name: 'reset' }));
+
+    expect(names).toEqual([undefined, 'firstName', undefined]);
+  });
+
+  it('not leak a clearErrors field name into a later unrelated callback', async () => {
+    const names: (string | undefined)[] = [];
+
+    const App = () => {
+      const { register, handleSubmit, subscribe, clearErrors } = useForm({
+        defaultValues: {
+          firstName: '',
+        },
+      });
+
+      React.useEffect(() => {
+        return subscribe({
+          formState: {
+            isSubmitting: true,
+          },
+          callback: ({ name }) => {
+            names.push(name);
+          },
+        });
+      }, [subscribe]);
+
+      return (
+        <form onSubmit={handleSubmit(() => {})}>
+          <input {...register('firstName')} />
+          <button type="button" onClick={() => clearErrors('firstName')}>
+            clear
+          </button>
+          <input type="submit" />
+        </form>
+      );
+    };
+
+    render(<App />);
+
+    fireEvent.click(screen.getByRole('button', { name: 'clear' }));
+
+    await act(async () => {
+      fireEvent.submit(document.querySelector('form')!);
+    });
+
+    expect(names.at(-1)).toBeUndefined();
+  });
+
+  it('keep isDirty true when reset keeps values and updates defaultValues', async () => {
+    const callbackFn = jest.fn();
+
+    const App = () => {
+      const { register, reset, subscribe } = useForm({
+        defaultValues: {
+          name: 'name',
+          description: 'a',
+        },
+      });
+
+      React.useEffect(() => {
+        return subscribe({
+          formState: {
+            isDirty: true,
+            values: true,
+          },
+          callback: callbackFn,
+        });
+      }, [subscribe]);
+
+      return (
+        <form>
+          <input {...register('name')} />
+          <input {...register('description')} />
+          <button
+            type="button"
+            onClick={() =>
+              reset(
+                {
+                  name: 'server-name',
+                  description: 'a',
+                },
+                {
+                  keepValues: true,
+                },
+              )
+            }
+          >
+            sync defaults
+          </button>
+        </form>
+      );
+    };
+
+    render(<App />);
+
+    fireEvent.input(screen.getAllByRole('textbox')[0], {
+      target: { value: 'client-name' },
+    });
+
+    fireEvent.click(screen.getByRole('button', { name: 'sync defaults' }));
+
+    await waitFor(() =>
+      expect(callbackFn).toHaveBeenLastCalledWith(
+        expect.objectContaining({
+          isDirty: true,
+          defaultValues: {
+            name: 'server-name',
+            description: 'a',
+          },
+          values: {
+            name: 'client-name',
+            description: 'a',
+          },
+        }),
+      ),
+    );
+  });
+
+  describe('when a child subscribes in an effect', () => {
+    type FormValues = { name: string };
+
+    const callbackFn = jest.fn();
+
+    function ChildComp({
+      subscribe,
+    }: {
+      subscribe: UseFormSubscribe<FormValues>;
+    }) {
+      React.useEffect(() => {
+        return subscribe({
+          formState: { isValid: true },
+          callback: callbackFn,
+        });
+      }, [subscribe]);
+      return null;
+    }
+
+    const resolver: Resolver<FormValues> = async (values) => ({
+      values,
+      errors: {},
+    });
+
+    it('keep the initial isValid of valid default values', async () => {
+      const App = () => {
+        const { register, subscribe, formState } = useForm<FormValues>({
+          mode: 'onChange',
+          defaultValues: { name: 'filled' },
+        });
+        return (
+          <form>
+            <input {...register('name', { required: true })} />
+            <ChildComp subscribe={subscribe} />
+            <button disabled={!formState.isValid}>submit</button>
+          </form>
+        );
+      };
+
+      render(<App />);
+
+      await waitFor(() => expect(screen.getByRole('button')).toBeEnabled());
+      expect(callbackFn).toHaveBeenCalledWith(
+        expect.objectContaining({ isValid: true }),
+      );
+    });
+
+    it('keep the initial isValid with a resolver', async () => {
+      const App = () => {
+        const { register, subscribe, formState } = useForm<FormValues>({
+          resolver,
+          defaultValues: { name: 'filled' },
+        });
+        return (
+          <form>
+            <input {...register('name')} />
+            <ChildComp subscribe={subscribe} />
+            <button disabled={!formState.isValid}>submit</button>
+          </form>
+        );
+      };
+
+      render(<App />);
+
+      await waitFor(() => expect(screen.getByRole('button')).toBeEnabled());
+    });
+
+    it('run the resolver once on mount with the values prop', async () => {
+      const resolverFn = jest.fn(resolver);
+
+      const App = () => {
+        const { register, subscribe, formState } = useForm<FormValues>({
+          resolver: resolverFn,
+          values: { name: 'filled' },
+        });
+        return (
+          <form>
+            <input {...register('name')} />
+            <ChildComp subscribe={subscribe} />
+            <button disabled={!formState.isValid}>submit</button>
+          </form>
+        );
+      };
+
+      render(<App />);
+
+      await waitFor(() => expect(screen.getByRole('button')).toBeEnabled());
+      expect(resolverFn).toHaveBeenCalledTimes(1);
+    });
+
+    it('run the resolver once on mount in StrictMode', async () => {
+      const resolverFn = jest.fn(resolver);
+
+      const App = () => {
+        const { register, subscribe, formState } = useForm<FormValues>({
+          resolver: resolverFn,
+          defaultValues: { name: 'filled' },
+        });
+        return (
+          <form>
+            <input {...register('name')} />
+            <ChildComp subscribe={subscribe} />
+            <button disabled={!formState.isValid}>submit</button>
+          </form>
+        );
+      };
+
+      render(
+        <React.StrictMode>
+          <App />
+        </React.StrictMode>,
+      );
+
+      await waitFor(() => expect(screen.getByRole('button')).toBeEnabled());
+      expect(resolverFn).toHaveBeenCalledTimes(1);
+    });
+  });
+});
+
+describe('call setValue within subscribe', () => {
+  it('update a dependent field when subscribed field changes', () => {
+    const callbackSpy = jest.fn();
+
+    function App() {
+      const { register, setValue, subscribe } = useForm<{
+        name: string;
+        nameLength: number;
+      }>({
+        defaultValues: {
+          name: '',
+          nameLength: 0,
+        },
+      });
+
+      React.useEffect(() => {
+        return subscribe({
+          name: 'name',
+          exact: true,
+          formState: {
+            values: true,
+          },
+          callback: ({ values }) => {
+            callbackSpy(values);
+            setValue('nameLength', values.name.length);
+          },
+        });
+      }, [setValue, subscribe]);
+
+      return (
+        <form>
+          <input aria-label="name" {...register('name')} />
+          <input aria-label="nameLength" {...register('nameLength')} />
+        </form>
+      );
+    }
+
+    render(<App />);
+
+    fireEvent.change(screen.getByLabelText('name'), {
+      target: { value: '1' },
+    });
+
+    expect(screen.getByLabelText('nameLength')).toHaveValue('1');
+    expect(callbackSpy).toHaveBeenCalledTimes(1);
+    expect(callbackSpy).toHaveBeenLastCalledWith({
+      name: '1',
+      nameLength: 0,
+    });
+
+    fireEvent.change(screen.getByLabelText('name'), {
+      target: { value: '12' },
+    });
+
+    expect(screen.getByLabelText('nameLength')).toHaveValue('2');
+    expect(callbackSpy).toHaveBeenCalledTimes(2);
+    expect(callbackSpy).toHaveBeenLastCalledWith({
+      name: '12',
+      nameLength: 1,
+    });
+  });
+
+  it('does not infinitely recurse when setValue call is conditional', () => {
+    const callbackSpy = jest.fn();
+    let counter = 0;
+
+    function App() {
+      const { register, setValue, subscribe } = useForm<{
+        name: string;
+        nameLength: number;
+      }>({
+        defaultValues: {
+          name: '',
+          nameLength: 0,
+        },
+      });
+
+      React.useEffect(() => {
+        return subscribe({
+          // Subscribe to entire form
+          formState: {
+            values: true,
+          },
+          callback: ({ name, values }) => {
+            // Should be called twice: once from user typing and one from setValue
+            callbackSpy(values);
+
+            if (name === 'name') {
+              // Only called once due to if statement
+              setValue('nameLength', ++counter);
+            }
+          },
+        });
+      }, [setValue, subscribe]);
+
+      return (
+        <form>
+          <input aria-label="name" {...register('name')} />
+          <input aria-label="nameLength" {...register('nameLength')} />
+        </form>
+      );
+    }
+
+    render(<App />);
+
+    fireEvent.change(screen.getByLabelText('name'), {
+      target: { value: '1' },
+    });
+
+    expect(screen.getByLabelText('nameLength')).toHaveValue('1');
+    expect(callbackSpy).toHaveBeenCalledTimes(2);
+    expect(callbackSpy).toHaveBeenLastCalledWith({
+      name: '1',
+      nameLength: 1,
+    });
+  });
+
+  it('does not infinitely recurse when setValue call is conditional', () => {
+    const callbackSpy = jest.fn();
+
+    function App() {
+      const { register, setValue, subscribe } = useForm<{
+        name: string;
+        nameLength: number;
+      }>({
+        defaultValues: {
+          name: '',
+          nameLength: 0,
+        },
+      });
+
+      React.useEffect(() => {
+        return subscribe({
+          // Subscribe to entire form
+          formState: {
+            values: true,
+          },
+          callback: ({ values }) => {
+            callbackSpy(values);
+
+            // No if-statement, but the second call sets the value to the current value {nameLength: 1}
+            // and should not trigger the subscribe callback again
+            setValue('nameLength', values.name.length);
+          },
+        });
+      }, [setValue, subscribe]);
+
+      return (
+        <form>
+          <input aria-label="name" {...register('name')} />
+          <input aria-label="nameLength" {...register('nameLength')} />
+        </form>
+      );
+    }
+
+    render(<App />);
+
+    fireEvent.change(screen.getByLabelText('name'), {
+      target: { value: '1' },
+    });
+
+    expect(screen.getByLabelText('nameLength')).toHaveValue('1');
+    expect(callbackSpy).toHaveBeenCalledTimes(2);
+    expect(callbackSpy).toHaveBeenLastCalledWith({
+      name: '1',
+      nameLength: 1,
+    });
+  });
+
+  it('works when calling reset within subscribe', () => {
+    const callbackSpy = jest.fn();
+
+    function App() {
+      const { register, reset, subscribe } = useForm<{
+        name: string;
+        nameLength: number;
+      }>({
+        defaultValues: {
+          name: '',
+          nameLength: 0,
+        },
+      });
+
+      React.useEffect(() => {
+        return subscribe({
+          name: 'name',
+          formState: {
+            values: true,
+          },
+          callback: ({ name, values }) => {
+            callbackSpy(values);
+
+            if (name === 'name' && values.nameLength === 0) {
+              reset({ name: values.name, nameLength: values.name.length });
+            }
+          },
+        });
+      }, [reset, subscribe]);
+
+      return (
+        <form>
+          <input aria-label="name" {...register('name')} />
+          <input aria-label="nameLength" {...register('nameLength')} />
+        </form>
+      );
+    }
+
+    render(<App />);
+
+    fireEvent.change(screen.getByLabelText('name'), {
+      target: { value: '1' },
+    });
+
+    expect(screen.getByLabelText('nameLength')).toHaveValue('1');
+    expect(callbackSpy).toHaveBeenCalledTimes(2);
+    expect(callbackSpy).toHaveBeenLastCalledWith({
+      name: '1',
+      nameLength: 1,
+    });
+  });
+
+  it('allows calling setValue with shouldDirty', () => {
+    const callbackSpy = jest.fn();
+    let dirtyFieldsSpy = null;
+
+    function App() {
+      const { register, setValue, subscribe } = useForm<{
+        name: string;
+        nameLength: number;
+      }>({
+        defaultValues: {
+          name: '',
+          nameLength: 0,
+        },
+      });
+
+      React.useEffect(() => {
+        return subscribe({
+          name: 'name',
+          formState: {
+            values: true,
+            dirtyFields: true,
+          },
+          callback: ({ name, values, dirtyFields }) => {
+            callbackSpy(values);
+            dirtyFieldsSpy = dirtyFields;
+
+            if (name === 'name' && values.nameLength === 0) {
+              setValue('nameLength', values.name.length, { shouldDirty: true });
+            }
+          },
+        });
+      }, [setValue, subscribe]);
+
+      return (
+        <form>
+          <input aria-label="name" {...register('name')} />
+          <input aria-label="nameLength" {...register('nameLength')} />
+        </form>
+      );
+    }
+
+    render(<App />);
+
+    fireEvent.change(screen.getByLabelText('name'), {
+      target: { value: '1' },
+    });
+
+    expect(dirtyFieldsSpy).toMatchObject({ name: true, nameLength: true });
+  });
+
+  it('invoke the values callback only once per setValue call', () => {
+    const callbackFn = jest.fn();
+
+    const App = () => {
+      const { subscribe, setValue, register } = useForm({
+        defaultValues: { weight: 0 },
+      });
+      register('weight');
+
+      React.useEffect(
+        () =>
+          subscribe({
+            formState: { values: true },
+            callback: callbackFn,
+          }),
+        [subscribe],
+      );
+
+      return (
+        <button type="button" onClick={() => setValue('weight', 100)}>
+          set
+        </button>
+      );
+    };
+
+    render(<App />);
+
+    act(() => {
+      fireEvent.click(screen.getByRole('button'));
+    });
+
+    expect(callbackFn).toHaveBeenCalledTimes(1);
+    expect(callbackFn).toHaveBeenCalledWith(
+      expect.objectContaining({ name: 'weight', values: { weight: 100 } }),
+    );
   });
 });

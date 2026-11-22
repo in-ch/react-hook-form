@@ -9,6 +9,7 @@ import {
 } from '@testing-library/react';
 
 import { Controller } from '../../controller';
+import { createFormControl } from '../../logic/createFormControl';
 import type {
   Control,
   FieldErrors,
@@ -22,10 +23,175 @@ import { useWatch } from '../../useWatch';
 import isEmptyObject from '../../utils/isEmptyObject';
 import noop from '../../utils/noop';
 
-jest.useFakeTimers();
+beforeEach(() => {
+  jest.useFakeTimers();
+});
+
+afterEach(() => {
+  jest.useRealTimers();
+});
 
 describe('reset', () => {
-  it('should reset the form and re-render the form', async () => {
+  it.each([
+    { keepValues: true },
+    { keepFieldsRef: true },
+    { keepDirtyValues: true },
+  ])('omit retained disabled fields after reset with %j', async (options) => {
+    const { register, subscribe, reset, getValues, handleSubmit } =
+      createFormControl({
+        defaultValues: { title: 'kept', enabled: 'yes' },
+      });
+    subscribe({ formState: { dirtyFields: true }, callback: () => {} });
+    register('title');
+    register('title', { disabled: true });
+    register('enabled');
+
+    const submit = () => handleSubmit((data) => data)();
+
+    expect(await submit()).toEqual({ enabled: 'yes' });
+
+    reset(undefined, options);
+
+    expect(getValues()).toEqual({ title: 'kept', enabled: 'yes' });
+    expect(await submit()).toEqual({ enabled: 'yes' });
+
+    register('title', { disabled: false });
+
+    expect(await submit()).toEqual({ title: 'kept', enabled: 'yes' });
+  });
+
+  it('keeps disabled state consistent with retained registrations after reset', async () => {
+    const { register, unregister, reset, handleSubmit } = createFormControl({
+      defaultValues: { title: 'kept', enabled: 'yes' },
+    });
+    register('title');
+    register('title', { disabled: true });
+    register('enabled');
+
+    const submit = () => handleSubmit((data) => data)();
+
+    expect(await submit()).toEqual({ enabled: 'yes' });
+
+    reset(undefined, { keepValues: true });
+
+    expect(await submit()).toEqual({ enabled: 'yes' });
+
+    unregister('title', { keepValue: true });
+
+    expect(await submit()).toEqual({ title: 'kept', enabled: 'yes' });
+
+    register('title');
+
+    expect(await submit()).toEqual({ title: 'kept', enabled: 'yes' });
+
+    register('title', { disabled: true });
+
+    expect(await submit()).toEqual({ enabled: 'yes' });
+  });
+
+  it('drops disabled names whose field reference was discarded before reset', async () => {
+    const { control, register, reset, handleSubmit } = createFormControl({
+      defaultValues: { title: 'kept', enabled: 'yes' },
+    });
+    register('title');
+    register('title', { disabled: true });
+    register('enabled');
+
+    expect(control._names.disabled.has('title')).toBe(true);
+
+    delete control._fields.title;
+    reset(undefined, { keepValues: true });
+
+    expect(control._names.disabled.has('title')).toBe(false);
+    expect(await handleSubmit((data) => data)()).toEqual({
+      title: 'kept',
+      enabled: 'yes',
+    });
+  });
+
+  it('records disabled on a field first registration after reset', async () => {
+    const { register, reset, handleSubmit } = createFormControl({
+      defaultValues: { title: 'hidden', enabled: 'yes' },
+    });
+    register('title');
+    register('title', { disabled: true });
+    register('enabled');
+
+    expect(await handleSubmit((data) => data)()).toEqual({ enabled: 'yes' });
+
+    reset({ title: 'hidden2', enabled: 'no' });
+
+    register('title', { disabled: true });
+    register('enabled');
+
+    expect(await handleSubmit((data) => data)()).toEqual({ enabled: 'no' });
+  });
+
+  it('records form level disabled on first registrations after reset', async () => {
+    const { register, reset, handleSubmit } = createFormControl({
+      defaultValues: { title: 'hidden', enabled: 'yes' },
+      disabled: true,
+    });
+    register('title');
+    register('enabled');
+
+    expect(await handleSubmit((data) => data)()).toEqual({});
+
+    reset({ title: 'hidden2', enabled: 'no' });
+
+    register('title');
+    register('enabled');
+
+    expect(await handleSubmit((data) => data)()).toEqual({});
+  });
+
+  it('omits a disabled useController field from submit data after reset (#14027)', async () => {
+    type FormValues = { a: string; b: string };
+    const onSubmit = jest.fn();
+
+    function Input({
+      control,
+      name,
+      disabled,
+    }: {
+      control: Control<FormValues>;
+      name: 'a' | 'b';
+      disabled?: boolean;
+    }) {
+      const { field } = useController({ control, name, disabled });
+      return <input {...field} />;
+    }
+
+    function App() {
+      const { control, reset, handleSubmit } = useForm<FormValues>({
+        defaultValues: { a: 'x', b: 'y' },
+      });
+
+      return (
+        <form onSubmit={handleSubmit(onSubmit)}>
+          <Input control={control} name="a" disabled />
+          <Input control={control} name="b" />
+          <button type="button" onClick={() => reset({ a: 'x2', b: 'y2' })}>
+            reset
+          </button>
+          <button>submit</button>
+        </form>
+      );
+    }
+
+    render(<App />);
+
+    fireEvent.click(screen.getByRole('button', { name: 'submit' }));
+    await waitFor(() => expect(onSubmit).toHaveBeenCalledTimes(1));
+    expect(onSubmit.mock.calls[0][0]).toEqual({ b: 'y' });
+
+    fireEvent.click(screen.getByRole('button', { name: 'reset' }));
+    fireEvent.click(screen.getByRole('button', { name: 'submit' }));
+    await waitFor(() => expect(onSubmit).toHaveBeenCalledTimes(2));
+    expect(onSubmit.mock.calls[1][0]).toEqual({ b: 'y2' });
+  });
+
+  it('reset the form and re-render the form', async () => {
     const { result } = renderHook(() => useForm<{ test: string }>());
 
     result.current.register('test');
@@ -48,7 +214,7 @@ describe('reset', () => {
     expect(result.current.formState.isSubmitted).toBeFalsy();
   });
 
-  it('should reset form value', () => {
+  it('reset form value', () => {
     let methods: any;
     const App = () => {
       methods = useForm<{
@@ -73,7 +239,7 @@ describe('reset', () => {
     });
   });
 
-  it('should reset the form with callback action', () => {
+  it('reset the form with callback action', () => {
     const App = () => {
       const { register, reset } = useForm({
         defaultValues: {
@@ -104,7 +270,7 @@ describe('reset', () => {
     );
   });
 
-  it('should set array value of multiple checkbox inputs correctly', async () => {
+  it('set array value of multiple checkbox inputs correctly', async () => {
     const App = () => {
       const { register } = useForm<{
         test: string[];
@@ -131,7 +297,7 @@ describe('reset', () => {
       );
   });
 
-  it('should reset the form if ref is HTMLElement and parent element is not form', async () => {
+  it('reset the form if ref is HTMLElement and parent element is not form', async () => {
     const mockReset = jest.spyOn(window.HTMLFormElement.prototype, 'reset');
     let methods: UseFormReturn<{
       test: string;
@@ -149,7 +315,72 @@ describe('reset', () => {
     expect(mockReset).not.toHaveBeenCalled();
   });
 
-  it('should set default value if values is specified to first argument', async () => {
+  it.each([false, true])(
+    'resets when a form control shadows the native reset method (iframe: %s)',
+    (insideFrame) => {
+      const App = () => {
+        const { register, reset, watch } = useForm({
+          defaultValues: { reset: 'initial' },
+        });
+
+        return (
+          <form>
+            <input {...register('reset')} />
+            <button type="button" onClick={() => reset()}>
+              Reset
+            </button>
+            <output>{watch('reset')}</output>
+          </form>
+        );
+      };
+      const iframe = document.createElement('iframe');
+      if (insideFrame) {
+        document.body.append(iframe);
+      }
+      const { container, getByRole, unmount } = render(<App />, {
+        container: insideFrame ? iframe.contentDocument!.body : undefined,
+      });
+      const input = getByRole('textbox');
+
+      // jsdom does not implement named properties on forms.
+      Object.defineProperty(container.querySelector('form'), 'reset', {
+        value: input,
+      });
+
+      for (const value of ['edited', 'edited again']) {
+        fireEvent.change(input, { target: { value } });
+        expect(getByRole('status')).toHaveTextContent(value);
+
+        fireEvent.click(getByRole('button', { name: 'Reset' }));
+
+        expect(input).toHaveValue('initial');
+        expect(getByRole('status')).toHaveTextContent('initial');
+      }
+
+      unmount();
+      iframe.remove();
+    },
+  );
+
+  it('preserves a callable reset method on the form', () => {
+    const { register, reset } = createFormControl();
+    const form = document.createElement('form');
+    const input = document.createElement('input');
+    form.append(input);
+    register('test').ref(input);
+    const nativeReset = form.reset;
+    const resetMethod = jest.fn(function (this: HTMLFormElement) {
+      nativeReset.call(this);
+    });
+    form.reset = resetMethod;
+
+    reset();
+
+    expect(resetMethod).toHaveBeenCalledTimes(1);
+    expect(resetMethod.mock.contexts[0]).toBe(form);
+  });
+
+  it('set default value if values is specified to first argument', async () => {
     const { result } = renderHook(() =>
       useForm<{
         test: string;
@@ -165,7 +396,7 @@ describe('reset', () => {
     });
   });
 
-  it('should reset unmountFieldsState value when shouldUnregister set to false', () => {
+  it('reset unmountFieldsState value when shouldUnregister set to false', () => {
     const { result } = renderHook(() =>
       useForm<{
         test: string;
@@ -177,7 +408,7 @@ describe('reset', () => {
     act(() => result.current.reset({ test: 'test' }));
   });
 
-  it('should not reset unmountFieldsState value by default', () => {
+  it('not reset unmountFieldsState value by default', () => {
     const { result } = renderHook(() =>
       useForm<{
         test: string;
@@ -189,7 +420,29 @@ describe('reset', () => {
     act(() => result.current.reset({ test: 'test' }));
   });
 
-  it('should not reset form values when keepValues is specified', () => {
+  it('keep dirtyFields in sync with isDirty when reset with keepValues', () => {
+    const { result } = renderHook(() => {
+      const form = useForm({ defaultValues: { test: 'test1' } });
+      form.formState.isDirty;
+      form.formState.dirtyFields;
+      return form;
+    });
+
+    result.current.register('test');
+
+    act(() => {
+      result.current.setValue('test', 'test', { shouldDirty: true });
+    });
+
+    act(() => {
+      result.current.reset(undefined, { keepValues: true });
+    });
+
+    expect(result.current.formState.isDirty).toBeTruthy();
+    expect(result.current.formState.dirtyFields).toEqual({ test: true });
+  });
+
+  it('not reset form values when keepValues is specified', () => {
     const App = () => {
       const { register, reset } = useForm();
 
@@ -225,7 +478,7 @@ describe('reset', () => {
     );
   });
 
-  it('should not reset form defaultValues when keepDefaultValues is specified', async () => {
+  it('not reset form defaultValues when keepDefaultValues is specified', async () => {
     const App = () => {
       const {
         register,
@@ -286,7 +539,7 @@ describe('reset', () => {
     expect(screen.queryByText('dirty')).not.toBeInTheDocument();
   });
 
-  it('should update dirty and dirtyFields when keepDefaultValues and updatedValues is provided', async () => {
+  it('update dirty and dirtyFields when keepDefaultValues and updatedValues is provided', async () => {
     function App() {
       const {
         register,
@@ -331,7 +584,50 @@ describe('reset', () => {
     expect(screen.getByText('{"firstName":true}')).toBeVisible();
   });
 
-  it('should not reset if keepStateOption is specified', async () => {
+  it('not be dirty after reset without values when keepDefaultValues is set', async () => {
+    function App() {
+      const {
+        register,
+        reset,
+        formState: { isDirty, dirtyFields },
+      } = useForm({
+        defaultValues: {
+          firstName: 'test',
+        },
+      });
+
+      return (
+        <form>
+          <input {...register('firstName')} placeholder="First Name" />
+          <p>{isDirty ? 'dirty' : 'pristine'}</p>
+          <p>{JSON.stringify(dirtyFields)}</p>
+
+          <button
+            type="button"
+            onClick={() => reset(undefined, { keepDefaultValues: true })}
+          >
+            reset
+          </button>
+        </form>
+      );
+    }
+
+    render(<App />);
+
+    fireEvent.input(screen.getByRole('textbox'), {
+      target: { value: 'changed' },
+    });
+
+    expect(await screen.findByText('dirty')).toBeVisible();
+
+    fireEvent.click(screen.getByRole('button'));
+
+    expect(await screen.findByText('pristine')).toBeVisible();
+    expect(screen.getByText('{}')).toBeVisible();
+    expect(screen.getByRole('textbox')).toHaveValue('test');
+  });
+
+  it('not reset if keepStateOption is specified', async () => {
     let formState = {};
     const onSubmit = jest.fn();
 
@@ -409,7 +705,7 @@ describe('reset', () => {
     });
   });
 
-  it('should reset field array fine with empty value', async () => {
+  it('reset field array fine with empty value', async () => {
     let data: unknown;
     const App = () => {
       const { control, register, reset, handleSubmit } = useForm<{
@@ -479,7 +775,7 @@ describe('reset', () => {
     );
   });
 
-  it('should return reset nested value', () => {
+  it('return reset nested value', () => {
     const getValuesResult: unknown[] = [];
 
     function App() {
@@ -543,7 +839,7 @@ describe('reset', () => {
     ]);
   });
 
-  it('should keep defaultValues after reset with shouldKeepDefaultValues', async () => {
+  it('keep defaultValues after reset with shouldKeepDefaultValues', async () => {
     type FormValues = { test: string; test1: string };
     const ControlledInput = ({ control }: { control: Control<FormValues> }) => {
       const { field } = useController({
@@ -646,7 +942,7 @@ describe('reset', () => {
         );
       }
 
-      it('should only update new reset values', async () => {
+      it('only update new reset values', async () => {
         render(<App />);
 
         await waitFor(() =>
@@ -678,7 +974,7 @@ describe('reset', () => {
         );
       });
 
-      it('should treat previously-undirty fields as dirty when keepDefaultValues is set', async () => {
+      it('treat previously-undirty fields as dirty when keepDefaultValues is set', async () => {
         let updatedDirtyFields: Record<string, boolean> = {};
         let updatedDirty = false;
 
@@ -827,7 +1123,7 @@ describe('reset', () => {
         );
       }
 
-      it('should only update new reset values', async () => {
+      it('only update new reset values', async () => {
         render(<App />);
 
         await waitFor(() =>
@@ -859,7 +1155,7 @@ describe('reset', () => {
         );
       });
 
-      it('should only update none dirty fields and keep other values updated', async () => {
+      it('only update none dirty fields and keep other values updated', async () => {
         render(<App />);
 
         fireEvent.change(screen.getByPlaceholderText('First Name'), {
@@ -908,9 +1204,65 @@ describe('reset', () => {
         );
       });
     });
+
+    it('merge nested object at leaf granularity, keeping only the dirty leaf and updating a clean sibling that is not bound to an input (#13627)', async () => {
+      type FormValues = {
+        user: { name: string; email: string };
+      };
+
+      let submittedValue: FormValues | undefined = undefined;
+      let doReset: (() => void) | undefined;
+
+      function App() {
+        const { register, handleSubmit, reset, getValues } =
+          useForm<FormValues>({
+            values: {
+              user: { name: 'bill', email: 'bill@old.com' },
+            },
+            resetOptions: { keepDirtyValues: true },
+          });
+
+        doReset = () =>
+          reset(
+            { user: { name: getValues('user.name'), email: 'bill@new.com' } },
+            { keepDirtyValues: true },
+          );
+
+        return (
+          <form
+            onSubmit={handleSubmit((data) => {
+              submittedValue = data;
+            })}
+          >
+            <input {...register('user.name')} placeholder="Name" />
+            <button>submit</button>
+          </form>
+        );
+      }
+
+      render(<App />);
+
+      fireEvent.change(screen.getByPlaceholderText('Name'), {
+        target: { value: 'edited-name' },
+      });
+
+      act(() => doReset!());
+
+      expect(
+        (screen.getByPlaceholderText('Name') as HTMLInputElement).value,
+      ).toEqual('edited-name');
+
+      fireEvent.click(screen.getByRole('button', { name: 'submit' }));
+
+      await waitFor(() =>
+        expect(submittedValue).toEqual({
+          user: { name: 'edited-name', email: 'bill@new.com' },
+        }),
+      );
+    });
   });
 
-  it('should allow to reset unmounted field array', () => {
+  it('allow resetting unmounted field array', () => {
     type FormValues = {
       test: { name: string }[];
     };
@@ -989,7 +1341,7 @@ describe('reset', () => {
     expect(screen.getAllByRole('textbox').length).toEqual(1);
   });
 
-  it('should only return register input when reset is invoked with shouldUnregister:true', async () => {
+  it('only return register input when reset is invoked with shouldUnregister:true', async () => {
     let submittedData = {};
 
     const App = () => {
@@ -1034,7 +1386,7 @@ describe('reset', () => {
     expect(submittedData).toEqual({});
   });
 
-  it('should update controlled input correctly with shouldUnregister set to true', () => {
+  it('update controlled input correctly with shouldUnregister set to true', () => {
     function App() {
       const { register, reset, control } = useForm({
         defaultValues: { uncontrolled: '', control: '' },
@@ -1080,7 +1432,7 @@ describe('reset', () => {
     ).toEqual('control');
   });
 
-  it('should keep reset value for conditionally mounted controlled fields with shouldUnregister', async () => {
+  it('keep reset value for conditionally mounted controlled fields with shouldUnregister', async () => {
     let submittedData = {};
 
     const App = () => {
@@ -1157,7 +1509,7 @@ describe('reset', () => {
     );
   });
 
-  it('should keep input values when keepValues is set to true', () => {
+  it('keep input values when keepValues is set to true', () => {
     function App() {
       const { register, handleSubmit, reset } = useForm();
       const [show, setShow] = React.useState(true);
@@ -1204,7 +1556,7 @@ describe('reset', () => {
     ).toEqual('test');
   });
 
-  it('should not update isMounted when isValid is subscribed', async () => {
+  it('not update isMounted when isValid is subscribed', async () => {
     const mounted: unknown[] = [];
 
     const App = () => {
@@ -1224,7 +1576,7 @@ describe('reset', () => {
     expect(mounted).toEqual([false, true]);
   });
 
-  it('should update isMounted when isValid is subscribed', async () => {
+  it('update isMounted when isValid is subscribed', async () => {
     const mounted: unknown[] = [];
     let tempControl: Control = {} as Control;
 
@@ -1260,7 +1612,7 @@ describe('reset', () => {
     expect(tempControl._state.mount).toBeTruthy();
   });
 
-  it('should reset values but keep defaultValues', async () => {
+  it('reset values but keep defaultValues', async () => {
     const App = () => {
       const { register, control, reset } = useForm({
         defaultValues: {
@@ -1310,7 +1662,7 @@ describe('reset', () => {
     ).toEqual('changed2');
   });
 
-  it('should reset field array async', () => {
+  it('reset field array async', () => {
     let tempFields: unknown[] = [];
 
     function App() {
@@ -1380,7 +1732,7 @@ describe('reset', () => {
     expect(tempFields).toEqual([]);
   });
 
-  it('should reset the form after submitted', async () => {
+  it('reset the form after submitted', async () => {
     function App() {
       const {
         register,
@@ -1467,7 +1819,7 @@ describe('reset', () => {
     ).toEqual('3');
   });
 
-  it('should keep isSubmitted and isSubmitSuccessful value when flags are set', async () => {
+  it('keep isSubmitted and isSubmitSuccessful value when flags are set', async () => {
     const { result } = renderHook(() => useForm<{ test: string }>());
 
     expect(result.current.formState.isSubmitted).toBeFalsy();
@@ -1510,7 +1862,7 @@ describe('reset', () => {
     expect(result.current.formState.isSubmitSuccessful).toBeTruthy();
   });
 
-  it('should keep track on updated defaultValues', async () => {
+  it('keep track on updated defaultValues', async () => {
     function App() {
       const {
         handleSubmit,
@@ -1543,7 +1895,7 @@ describe('reset', () => {
     });
   });
 
-  it('should return defaultValues in useWatch and watch when using calling reset with empty object', async () => {
+  it('reset to empty values in useWatch and watch when calling reset with empty object', async () => {
     const defaultValues = {
       something: 'anything',
     };
@@ -1586,11 +1938,69 @@ describe('reset', () => {
 
     fireEvent.click(screen.getByRole('button'));
 
-    expect(screen.getByText('watch: anything')).toBeVisible();
-    expect(screen.getByText('useWatch: anything')).toBeVisible();
+    expect(screen.getByText('watch:')).toBeVisible();
+    expect(screen.getByText('useWatch:')).toBeVisible();
   });
 
-  it('should keep mounted value after reset with keep dirty values', async () => {
+  it('use values passed to reset({}) as new defaultValues on submit', async () => {
+    let submittedData: unknown;
+
+    function App() {
+      const { reset, handleSubmit } = useForm({
+        defaultValues: {
+          name: {
+            firstName: 'John',
+            lastName: 'Doe',
+          },
+        },
+      });
+
+      return (
+        <form
+          onSubmit={handleSubmit((data) => {
+            submittedData = data;
+          })}
+        >
+          <button type="submit">submit</button>
+          <button
+            type="button"
+            onClick={() => {
+              reset({});
+            }}
+          >
+            reset
+          </button>
+        </form>
+      );
+    }
+
+    render(<App />);
+
+    fireEvent.click(screen.getByRole('button', { name: 'reset' }));
+    fireEvent.click(screen.getByRole('button', { name: 'submit' }));
+
+    await waitFor(() => expect(submittedData).toEqual({}));
+  });
+
+  it('set _formValues to empty object after reset({})', () => {
+    const { result } = renderHook(() =>
+      useForm({
+        defaultValues: {
+          name: {
+            firstName: 'John',
+            lastName: 'Doe',
+          },
+        },
+      }),
+    );
+
+    act(() => result.current.reset({}));
+
+    expect(result.current.getValues()).toEqual({});
+    expect(result.current.control._defaultValues).toEqual({});
+  });
+
+  it('keep mounted value after reset with keep dirty values', async () => {
     function App() {
       const {
         getValues,
@@ -1630,7 +2040,7 @@ describe('reset', () => {
     });
   });
 
-  it('should keep dirty array value after reset with keepDirtyValues', async () => {
+  it('keep dirty array value after reset with keepDirtyValues', async () => {
     function App() {
       const {
         getValues,
@@ -1689,7 +2099,70 @@ describe('reset', () => {
     });
   });
 
-  it('should not mutate data outside of library', () => {
+  it('keep dirty fields for dynamic controller name when keepDirty and keepDirtyValues are true', async () => {
+    type FormValues = {
+      name_es: string;
+      name_en: string;
+    };
+
+    const defaultValues: FormValues = {
+      name_es: 'Espanol',
+      name_en: 'English',
+    };
+
+    function App() {
+      const {
+        control,
+        reset,
+        formState: { dirtyFields },
+      } = useForm<FormValues>({
+        defaultValues,
+      });
+      const [language, setLanguage] = React.useState<'es' | 'en'>('en');
+
+      return (
+        <form>
+          <Controller
+            control={control}
+            name={`name_${language}`}
+            render={({ field }) => <input {...field} />}
+          />
+          <button
+            type="button"
+            onClick={() => {
+              setLanguage((prev) => (prev === 'en' ? 'es' : 'en'));
+              reset(defaultValues, { keepDirty: true, keepDirtyValues: true });
+            }}
+          >
+            toggle
+          </button>
+          <p data-testid="dirtyFields">{JSON.stringify(dirtyFields)}</p>
+        </form>
+      );
+    }
+
+    render(<App />);
+
+    fireEvent.change(screen.getByRole('textbox'), {
+      target: {
+        value: 'Test 1',
+      },
+    });
+
+    expect(screen.getByTestId('dirtyFields').textContent).toBe(
+      '{"name_en":true}',
+    );
+
+    fireEvent.click(screen.getByRole('button', { name: 'toggle' }));
+
+    await waitFor(() =>
+      expect(screen.getByTestId('dirtyFields').textContent).toBe(
+        '{"name_en":true}',
+      ),
+    );
+  });
+
+  it('not mutate data outside of library', () => {
     const defaultValues = {
       test: 'ok',
     };
@@ -1721,7 +2194,7 @@ describe('reset', () => {
     expect(defaultValues.test).toBe('ok');
   });
 
-  it('should not reset value to undefined with onSubmit data', async () => {
+  it('not reset value to undefined with onSubmit data', async () => {
     const onSubmit = jest.fn();
     const App = () => {
       const { handleSubmit, reset, register } = useForm({
@@ -1764,7 +2237,7 @@ describe('reset', () => {
     );
   });
 
-  it('should clear validation errors after reset to prevent false errors on subsequent submissions (Next.js 16 Server Actions fix)', async () => {
+  it('clear validation errors after reset to prevent false errors on subsequent submissions (Next.js 16 Server Actions fix)', async () => {
     const resolver = jest.fn(
       async (data: { name: string; description?: string }) => {
         const errors: FieldErrors<{ name: string; description?: string }> = {};
@@ -1878,7 +2351,7 @@ describe('reset', () => {
     ).not.toBeInTheDocument();
   });
 
-  it('should keep isValid value when reset is called with keepIsValid option', async () => {
+  it('keep isValid value when reset is called with keepIsValid option', async () => {
     let formState: { isValid: boolean } = { isValid: false };
 
     const App = () => {
@@ -1966,7 +2439,74 @@ describe('reset', () => {
     expect(formState).toEqual({ isValid: false });
   });
 
-  it('should keep isValid value when form has resetOptions.keepIsValid configured', async () => {
+  it.each([
+    {
+      initialValue: '',
+      resetValue: 'value',
+      otherValue: 'value',
+      expectedTrigger: true,
+      expectedValid: true,
+    },
+    {
+      initialValue: 'value',
+      resetValue: '',
+      otherValue: 'value',
+      expectedTrigger: false,
+      expectedValid: false,
+    },
+    {
+      initialValue: 'value',
+      resetValue: 'value',
+      otherValue: '',
+      expectedTrigger: true,
+      expectedValid: false,
+    },
+  ])(
+    'recompute preserved isValid after triggering a field ($expectedTrigger, $expectedValid)',
+    async ({
+      initialValue,
+      resetValue,
+      otherValue,
+      expectedTrigger,
+      expectedValid,
+    }) => {
+      const { result } = renderHook(() => {
+        const methods = useForm({
+          defaultValues: { test: initialValue, other: 'value' },
+          mode: 'onChange',
+        });
+
+        methods.register('test', { required: true });
+        methods.register('other', { required: true });
+        methods.formState.isValid;
+
+        return methods;
+      });
+
+      await waitFor(() =>
+        expect(result.current.formState.isValid).toBe(!expectedValid),
+      );
+
+      act(() => {
+        result.current.reset(
+          { test: resetValue, other: otherValue },
+          { keepIsValid: true },
+        );
+      });
+
+      expect(result.current.formState.isValid).toBe(!expectedValid);
+
+      await act(async () => {
+        expect(await result.current.trigger('test')).toBe(expectedTrigger);
+      });
+
+      await waitFor(() =>
+        expect(result.current.formState.isValid).toBe(expectedValid),
+      );
+    },
+  );
+
+  it('keep isValid value when form has resetOptions.keepIsValid configured', async () => {
     let formState: { isValid: boolean } = { isValid: false };
 
     const App = () => {
@@ -2026,5 +2566,1725 @@ describe('reset', () => {
 
     expect(screen.getByText('is valid: true')).toBeInTheDocument();
     expect(formState).toEqual({ isValid: true });
+  });
+
+  it('cancel a pending delayError timer so the reset error does not come back', async () => {
+    jest.useFakeTimers();
+
+    const message = 'too long.';
+
+    const App = () => {
+      const {
+        register,
+        reset,
+        formState: { errors },
+      } = useForm<{ test: string }>({
+        delayError: 500,
+        mode: 'onChange',
+      });
+
+      return (
+        <div>
+          <input {...register('test', { maxLength: 4 })} />
+          <button type="button" onClick={() => reset()}>
+            reset
+          </button>
+          {errors.test && <p>{message}</p>}
+        </div>
+      );
+    };
+
+    render(<App />);
+
+    // Schedule a delayed error, then reset the form before the delay elapses.
+    await act(async () => {
+      fireEvent.change(screen.getByRole('textbox'), {
+        target: { value: '123456' },
+      });
+    });
+
+    fireEvent.click(screen.getByRole('button'));
+
+    await act(async () => {
+      jest.advanceTimersByTime(500);
+    });
+
+    expect(screen.queryByText(message)).not.toBeInTheDocument();
+
+    // The delay itself must still work, otherwise the assertion above would
+    // pass even if no timer had been scheduled in the first place.
+    await act(async () => {
+      fireEvent.change(screen.getByRole('textbox'), {
+        target: { value: '654321' },
+      });
+    });
+
+    expect(screen.queryByText(message)).not.toBeInTheDocument();
+
+    await act(async () => {
+      jest.advanceTimersByTime(500);
+    });
+
+    expect(screen.getByText(message)).toBeVisible();
+
+    jest.useRealTimers();
+  });
+
+  it('clear isValidating when reset is called while a validation is pending', async () => {
+    let resolveResolver: (() => void) | undefined;
+
+    const App = () => {
+      const [visible, setVisible] = React.useState(true);
+      const {
+        register,
+        reset,
+        formState: { isValid, isValidating, validatingFields },
+      } = useForm<{ test: string }>({
+        defaultValues: { test: '' },
+        resolver: async (values) => {
+          await new Promise<void>((resolve) => {
+            resolveResolver = resolve;
+          });
+          return { values, errors: {} };
+        },
+      });
+
+      return (
+        <div>
+          {visible && <input {...register('test')} />}
+          <p>{`valid:${isValid}`}</p>
+          <p>{`status:${isValidating ? 'validating' : 'idle'}`}</p>
+          <p>{`tracked:${Object.keys(validatingFields).join(',')}`}</p>
+          <button
+            type="button"
+            onClick={() => {
+              reset();
+              setVisible(false);
+            }}
+          >
+            reset
+          </button>
+        </div>
+      );
+    };
+
+    render(<App />);
+
+    await act(async () => {
+      resolveResolver && resolveResolver();
+    });
+
+    await act(async () => {
+      fireEvent.change(screen.getByRole('textbox'), {
+        target: { value: 'a' },
+      });
+    });
+
+    expect(screen.getByText(/^status:/).textContent).toEqual(
+      'status:validating',
+    );
+
+    await act(async () => {
+      fireEvent.click(screen.getByRole('button'));
+    });
+
+    expect(screen.getByText(/^status:/).textContent).toEqual('status:idle');
+    expect(screen.getByText(/^tracked:/).textContent).toEqual('tracked:');
+
+    // The field is gone, so the in-flight resolver has no mounted name left to
+    // clear and cannot undo a stale flag on its own.
+    await act(async () => {
+      resolveResolver && resolveResolver();
+    });
+
+    expect(screen.getByText(/^status:/).textContent).toEqual('status:idle');
+    expect(screen.getByText(/^tracked:/).textContent).toEqual('tracked:');
+  });
+
+  it('keep isValidating when reset is called with keepIsValidating option', async () => {
+    let resolveResolver: (() => void) | undefined;
+
+    const App = () => {
+      const [visible, setVisible] = React.useState(true);
+      const {
+        register,
+        reset,
+        formState: { isValid, isValidating, validatingFields },
+      } = useForm<{ test: string }>({
+        defaultValues: { test: '' },
+        resolver: async (values) => {
+          await new Promise<void>((resolve) => {
+            resolveResolver = resolve;
+          });
+          return { values, errors: {} };
+        },
+      });
+
+      return (
+        <div>
+          {visible && <input {...register('test')} />}
+          <p>{`valid:${isValid}`}</p>
+          <p>{`status:${isValidating ? 'validating' : 'idle'}`}</p>
+          <p>{`tracked:${Object.keys(validatingFields).join(',')}`}</p>
+          <button
+            type="button"
+            onClick={() => {
+              reset(undefined, { keepIsValidating: true });
+              setVisible(false);
+            }}
+          >
+            reset
+          </button>
+        </div>
+      );
+    };
+
+    render(<App />);
+
+    await act(async () => {
+      resolveResolver && resolveResolver();
+    });
+
+    await act(async () => {
+      fireEvent.change(screen.getByRole('textbox'), {
+        target: { value: 'a' },
+      });
+    });
+
+    await act(async () => {
+      fireEvent.click(screen.getByRole('button'));
+    });
+
+    expect(screen.getByText(/^status:/).textContent).toEqual(
+      'status:validating',
+    );
+    expect(screen.getByText(/^tracked:/).textContent).toEqual('tracked:test');
+  });
+
+  // #13714/#13715 clear `isValidating`/`validatingFields` on reset, but the
+  // resolver call started by the earlier trigger() is never cancelled or
+  // invalidated. When it finally settles after reset() has already restored
+  // clean values, executeSchemaAndUpdateState() still writes its (stale)
+  // result into `_formState.errors`, resurrecting an error that belongs to
+  // input the user no longer has on screen.
+  it('not resurrect a resolver error that settles after reset() clears the field', async () => {
+    let resolveResolver:
+      | ((result: { values: unknown; errors: unknown }) => void)
+      | undefined;
+    const receivedValues: Array<{ test: string }> = [];
+
+    const App = () => {
+      const {
+        register,
+        reset,
+        trigger,
+        formState: { errors },
+      } = useForm<{ test: string }>({
+        defaultValues: { test: '' },
+        resolver: (values) => {
+          receivedValues.push(values);
+          return new Promise((resolve) => {
+            resolveResolver = resolve;
+          });
+        },
+      });
+
+      return (
+        <div>
+          <input {...register('test')} />
+          <p>{`error:${errors.test ? errors.test.message : 'none'}`}</p>
+          <button type="button" onClick={() => void trigger('test')}>
+            trigger
+          </button>
+          <button type="button" onClick={() => reset({ test: '' })}>
+            reset
+          </button>
+        </div>
+      );
+    };
+
+    render(<App />);
+
+    fireEvent.change(screen.getByRole('textbox'), {
+      target: { value: 'invalid' },
+    });
+
+    await act(async () => {
+      fireEvent.click(screen.getByRole('button', { name: 'trigger' }));
+    });
+
+    // Sanity check: the resolver actually ran against the invalid input and
+    // is still pending.
+    expect(receivedValues).toEqual([{ test: 'invalid' }]);
+    expect(resolveResolver).toBeDefined();
+
+    await act(async () => {
+      fireEvent.click(screen.getByRole('button', { name: 'reset' }));
+    });
+
+    expect(screen.getByText(/^error:/).textContent).toEqual('error:none');
+    expect(screen.getByRole('textbox')).toHaveValue('');
+
+    // The stale trigger()/resolver call — still validating the discarded
+    // 'invalid' input — settles only now, after reset() already restored a
+    // clean form.
+    await act(async () => {
+      resolveResolver!({
+        values: {},
+        errors: {
+          test: { type: 'manual', message: 'stale error' },
+        },
+      });
+    });
+
+    expect(screen.getByText(/^error:/).textContent).toEqual('error:none');
+  });
+
+  // Control for the regression above: without an intervening reset(), the
+  // same delayed resolver result must still be applied as usual.
+  it('apply a delayed resolver error normally when reset() is not called', async () => {
+    let resolveResolver:
+      | ((result: { values: unknown; errors: unknown }) => void)
+      | undefined;
+
+    const App = () => {
+      const {
+        register,
+        trigger,
+        formState: { errors },
+      } = useForm<{ test: string }>({
+        defaultValues: { test: '' },
+        resolver: () =>
+          new Promise((resolve) => {
+            resolveResolver = resolve;
+          }),
+      });
+
+      return (
+        <div>
+          <input {...register('test')} />
+          <p>{`error:${errors.test ? errors.test.message : 'none'}`}</p>
+          <button type="button" onClick={() => void trigger('test')}>
+            trigger
+          </button>
+        </div>
+      );
+    };
+
+    render(<App />);
+
+    fireEvent.change(screen.getByRole('textbox'), {
+      target: { value: 'invalid' },
+    });
+
+    await act(async () => {
+      fireEvent.click(screen.getByRole('button', { name: 'trigger' }));
+    });
+
+    expect(resolveResolver).toBeDefined();
+
+    await act(async () => {
+      resolveResolver!({
+        values: {},
+        errors: {
+          test: { type: 'manual', message: 'stale error' },
+        },
+      });
+    });
+
+    expect(screen.getByText(/^error:/).textContent).toEqual(
+      'error:stale error',
+    );
+  });
+
+  // A stale resolver settling after reset() must not clear validatingFields
+  // for a field that a newer, still-pending trigger() call is validating.
+  it('keep a newer trigger validation marked as validating when a stale resolver from before reset settles', async () => {
+    const resolveCalls: Array<
+      (result: { values: unknown; errors: unknown }) => void
+    > = [];
+
+    const { result } = renderHook(() => {
+      const form = useForm<{ test: string }>({
+        defaultValues: { test: 'old' },
+        resolver: () =>
+          new Promise((resolve) => {
+            resolveCalls.push(resolve);
+          }),
+      });
+      form.formState.isValidating;
+      form.formState.validatingFields;
+      return form;
+    });
+
+    let staleTrigger!: Promise<boolean>;
+    let freshTrigger!: Promise<boolean>;
+
+    await act(async () => {
+      staleTrigger = result.current.trigger('test');
+    });
+
+    await act(async () => {
+      result.current.reset({ test: 'new' });
+    });
+
+    await act(async () => {
+      freshTrigger = result.current.trigger('test');
+    });
+
+    expect(resolveCalls).toHaveLength(2);
+    expect(result.current.formState.isValidating).toBe(true);
+
+    // The pre-reset resolver settles first; the post-reset one is still
+    // pending and must keep validatingFields set.
+    await act(async () => {
+      resolveCalls[0]({
+        values: {},
+        errors: { test: { type: 'manual', message: 'stale error' } },
+      });
+      await staleTrigger;
+    });
+
+    expect(result.current.formState.isValidating).toBe(true);
+    expect(result.current.formState.validatingFields).toEqual({
+      test: true,
+    });
+
+    await act(async () => {
+      resolveCalls[1]({ values: { test: 'new' }, errors: {} });
+      await freshTrigger;
+    });
+
+    expect(result.current.formState.isValidating).toBe(false);
+  });
+
+  // A stale resolver settling after reset({ keepIsValid: true }) must not
+  // overwrite the isValid value that keepIsValid deliberately preserved:
+  // an empty `errors` object from a discarded validation pass is not the
+  // same thing as the form actually being valid.
+  it('not overwrite a keepIsValid-preserved isValid when a stale resolver settles after reset', async () => {
+    const invalidResult = {
+      values: {},
+      errors: { test: { type: 'manual', message: 'invalid' } },
+    };
+    let resolveStale: ((result: typeof invalidResult) => void) | undefined;
+    let callCount = 0;
+
+    const { result } = renderHook(() =>
+      useForm<{ test: string }>({
+        defaultValues: { test: 'invalid' },
+        resolver: () => {
+          callCount += 1;
+          return callCount === 1
+            ? Promise.resolve(invalidResult)
+            : new Promise<typeof invalidResult>((resolve) => {
+                resolveStale = resolve;
+              });
+        },
+      }),
+    );
+
+    const observedIsValid: Array<boolean | undefined> = [];
+    const unsubscribe = result.current.subscribe({
+      formState: { isValid: true },
+      callback: (formState) => observedIsValid.push(formState.isValid),
+    });
+
+    // First trigger establishes a real, current isValid: false.
+    await act(async () => {
+      await result.current.trigger('test');
+    });
+    expect(observedIsValid.at(-1)).toBe(false);
+
+    let staleTrigger!: Promise<boolean>;
+    await act(async () => {
+      staleTrigger = result.current.trigger('test');
+    });
+
+    // keepIsValid explicitly preserves the current isValid across reset,
+    // even though errors are cleared.
+    await act(async () => {
+      result.current.reset({ test: 'still invalid' }, { keepIsValid: true });
+    });
+    expect(observedIsValid.at(-1)).toBe(false);
+
+    // The pre-reset resolver settles after reset — its (still-invalid)
+    // result must not flip the preserved isValid back to true.
+    await act(async () => {
+      resolveStale!(invalidResult);
+      await staleTrigger;
+    });
+
+    expect(observedIsValid.at(-1)).toBe(false);
+    unsubscribe();
+  });
+
+  it('not overwrite a keepIsValid-preserved isValid when a stale built-in trigger() settles after reset', async () => {
+    const resolvers: Array<(result: string | boolean) => void> = [];
+    const { result } = renderHook(() => {
+      const form = useForm<{ test: string }>({
+        defaultValues: { test: 'invalid' },
+      });
+      form.formState.isValid;
+      return form;
+    });
+    result.current.register('test', {
+      validate: () =>
+        new Promise<string | boolean>((resolve) => {
+          resolvers.push(resolve);
+        }),
+    });
+
+    let first!: Promise<boolean>;
+    await act(async () => {
+      first = result.current.trigger();
+    });
+    await act(async () => {
+      resolvers.splice(0).forEach((resolve) => resolve('invalid'));
+      await first;
+    });
+    expect(result.current.formState.isValid).toBe(false);
+
+    let stale!: Promise<boolean>;
+    await act(async () => {
+      stale = result.current.trigger();
+    });
+    await act(async () => {
+      result.current.reset({ test: 'still invalid' }, { keepIsValid: true });
+    });
+    await act(async () => {
+      resolvers.splice(0).forEach((resolve) => resolve('invalid'));
+      await stale;
+    });
+
+    expect(result.current.formState.isValid).toBe(false);
+  });
+
+  // Control: with no intervening reset(), a slow built-in trigger() result is
+  // still applied as usual.
+  it('apply a delayed built-in trigger() result when reset() is not called', async () => {
+    const resolvers: Array<(result: string | boolean) => void> = [];
+    const { result } = renderHook(() => {
+      const form = useForm<{ test: string }>({
+        defaultValues: { test: '' },
+      });
+      form.formState.isValid;
+      form.formState.touchedFields;
+      return form;
+    });
+    result.current.register('test', {
+      validate: () =>
+        new Promise<string | boolean>((resolve) => {
+          resolvers.push(resolve);
+        }),
+    });
+
+    let pending!: Promise<boolean>;
+    await act(async () => {
+      pending = result.current.trigger(undefined, { shouldTouch: true });
+    });
+    await act(async () => {
+      resolvers.splice(0).forEach((resolve) => resolve('invalid'));
+      await pending;
+    });
+
+    expect(result.current.formState.isValid).toBe(false);
+    expect(result.current.formState.touchedFields).toEqual({ test: true });
+  });
+
+  it('keep isValidating true after keepIsValidating reset even once the stale resolver settles', async () => {
+    // keepIsValidating intentionally skips the reset-time clear; nothing
+    // re-derives isValidating from a resolver call discarded by reset(), so
+    // it stays true until a fresh trigger()/validation for the field runs.
+    type Result = {
+      values: { test: string };
+      errors: FieldErrors<{ test: string }>;
+    };
+    const completions: Array<(value: Result) => void> = [];
+    const { result } = renderHook(() => {
+      const form = useForm<{ test: string }>({
+        defaultValues: { test: 'old' },
+        resolver: () =>
+          new Promise<Result>((resolve) => completions.push(resolve)),
+      });
+      form.register('test');
+      form.formState.isValidating;
+      form.formState.validatingFields;
+      return form;
+    });
+    let old!: Promise<boolean>;
+    await act(async () => {
+      old = result.current.trigger('test');
+    });
+    await act(async () => {
+      result.current.reset({ test: 'new' }, { keepIsValidating: true });
+    });
+    expect(result.current.formState.isValidating).toBe(true);
+    await act(async () => {
+      completions[0]({ values: { test: 'old' }, errors: {} });
+      expect(await old).toBe(true);
+    });
+    expect(result.current.formState.isValidating).toBe(true);
+    expect(result.current.formState.validatingFields).toEqual({
+      test: true,
+    });
+
+    let fresh!: Promise<boolean>;
+    await act(async () => {
+      fresh = result.current.trigger('test');
+    });
+    await act(async () => {
+      completions[1]({ values: { test: 'new' }, errors: {} });
+      await fresh;
+    });
+    expect(result.current.formState.isValidating).toBe(false);
+  });
+
+  it('return the discarded validation result without touching or focusing reset fields', async () => {
+    const invalid = {
+      values: {},
+      errors: { test: { type: 'manual', message: 'old error' } },
+    };
+    let complete!: (value: typeof invalid) => void;
+    const { result } = renderHook(() => {
+      const form = useForm<{ test: string }>({
+        defaultValues: { test: 'old' },
+        resolver: () =>
+          new Promise<typeof invalid>((resolve) => {
+            complete = resolve;
+          }),
+      });
+      form.formState.touchedFields;
+      form.formState.errors;
+      return form;
+    });
+    const focus = jest.fn();
+    result.current.register('test').ref({ name: 'test', value: 'old', focus });
+    let pending!: Promise<boolean>;
+    await act(async () => {
+      pending = result.current.trigger('test', {
+        shouldTouch: true,
+        shouldFocus: true,
+      });
+    });
+    await act(async () => {
+      result.current.reset({ test: 'new' });
+    });
+    await act(async () => {
+      complete(invalid);
+      expect(await pending).toBe(false);
+    });
+    expect(result.current.formState.touchedFields).toEqual({});
+    expect(result.current.formState.errors).toEqual({});
+    expect(focus).not.toHaveBeenCalled();
+  });
+
+  it('not touch or focus reset fields when a stale built-in trigger settles', async () => {
+    const resolvers: Array<(result: string | boolean) => void> = [];
+    const { result } = renderHook(() => {
+      const form = useForm<{ test: string }>({
+        defaultValues: { test: 'old' },
+      });
+      form.formState.touchedFields;
+      form.formState.errors;
+      return form;
+    });
+    const focus = jest.fn();
+    result.current
+      .register('test', {
+        validate: () =>
+          new Promise<string | boolean>((resolve) => {
+            resolvers.push(resolve);
+          }),
+      })
+      .ref({ name: 'test', value: 'old', focus });
+    let pending!: Promise<boolean>;
+    await act(async () => {
+      pending = result.current.trigger('test', {
+        shouldTouch: true,
+        shouldFocus: true,
+      });
+    });
+    await act(async () => {
+      result.current.reset({ test: 'new' });
+    });
+    await act(async () => {
+      resolvers.splice(0, 1)[0]('old error');
+      await pending;
+    });
+    expect(result.current.formState.touchedFields).toEqual({});
+    expect(result.current.formState.errors).toEqual({});
+    expect(focus).not.toHaveBeenCalled();
+  });
+
+  it('not delay a current error when a pre-reset trigger settles', async () => {
+    jest.useFakeTimers();
+
+    type Result = {
+      values: { test: string };
+      errors: FieldErrors<{ test: string }>;
+    };
+    let complete!: (value: Result) => void;
+    const { result } = renderHook(() => {
+      const form = useForm<{ test: string }>({
+        defaultValues: { test: 'old' },
+        delayError: 100,
+        resolver: () =>
+          new Promise<Result>((resolve) => {
+            complete = resolve;
+          }),
+      });
+      form.formState.errors;
+      return form;
+    });
+    let pending!: Promise<boolean>;
+    // delayError is an internal trigger option used by validation flows.
+    const options = { delayError: true, shouldFocus: false };
+    await act(async () => {
+      pending = result.current.trigger('test', options);
+    });
+    await act(async () => {
+      result.current.reset({ test: 'new' });
+    });
+    await act(async () => {
+      result.current.setError('test', {
+        type: 'server',
+        message: 'current error',
+      });
+    });
+    await act(async () => {
+      complete({ values: { test: 'old' }, errors: {} });
+      await pending;
+    });
+    expect(result.current.formState.errors.test?.message).toBe('current error');
+    await act(async () => {
+      jest.advanceTimersByTime(100);
+    });
+    expect(result.current.formState.errors.test?.message).toBe('current error');
+  });
+
+  it('not delay a current error when a pre-reset built-in trigger settles', async () => {
+    let complete!: (result: string | boolean) => void;
+    const { result } = renderHook(() => {
+      const form = useForm<{ test: string }>({
+        defaultValues: { test: 'old' },
+        delayError: 100,
+      });
+      form.formState.errors;
+      return form;
+    });
+    result.current.register('test', {
+      validate: () =>
+        new Promise<string | boolean>((resolve) => {
+          complete = resolve;
+        }),
+    });
+    let pending!: Promise<boolean>;
+    const options = { delayError: true, shouldFocus: false };
+    await act(async () => {
+      pending = result.current.trigger('test', options);
+    });
+    await act(async () => {
+      result.current.reset({ test: 'new' });
+    });
+    await act(async () => {
+      result.current.setError('test', {
+        type: 'server',
+        message: 'current error',
+      });
+    });
+    await act(async () => {
+      complete(true);
+      await pending;
+    });
+    expect(result.current.formState.errors.test?.message).toBe('current error');
+    await act(async () => {
+      jest.advanceTimersByTime(100);
+    });
+    expect(result.current.formState.errors.test?.message).toBe('current error');
+  });
+
+  // #13722 and #13733 added a _resetCallId guard to executeSchemaAndUpdateState
+  // and handleSubmit, but the resolver call started by a keystroke was left
+  // unguarded, so it still writes its discarded result into a form that
+  // reset() has already cleaned. _updateIsFieldValueUpdated normally masks
+  // this by bailing when the in-flight value no longer matches the current
+  // one, which is why a reset that keeps or restores the same value is needed
+  // to see it.
+  it('not resurrect an onChange resolver error that settles after reset({ keepValues: true })', async () => {
+    let resolveResolver:
+      | ((result: { values: unknown; errors: unknown }) => void)
+      | undefined;
+
+    const App = () => {
+      const {
+        register,
+        reset,
+        formState: { errors },
+      } = useForm<{ test: string }>({
+        mode: 'onChange',
+        defaultValues: { test: '' },
+        resolver: () =>
+          new Promise((resolve) => {
+            resolveResolver = resolve;
+          }),
+      });
+
+      return (
+        <div>
+          <input {...register('test')} />
+          <p>{`error:${errors.test ? errors.test.message : 'none'}`}</p>
+          <button
+            type="button"
+            onClick={() => reset(undefined, { keepValues: true })}
+          >
+            reset
+          </button>
+        </div>
+      );
+    };
+
+    render(<App />);
+
+    await act(async () => {
+      fireEvent.change(screen.getByRole('textbox'), {
+        target: { value: 'invalid' },
+      });
+    });
+
+    // Sanity check: the keystroke really did start a resolver call that is
+    // still pending.
+    expect(resolveResolver).toBeDefined();
+
+    await act(async () => {
+      fireEvent.click(screen.getByRole('button', { name: 'reset' }));
+    });
+
+    expect(screen.getByText(/^error:/).textContent).toEqual('error:none');
+
+    await act(async () => {
+      resolveResolver!({
+        values: {},
+        errors: { test: { type: 'manual', message: 'stale error' } },
+      });
+    });
+
+    expect(screen.getByText(/^error:/).textContent).toEqual('error:none');
+  });
+
+  it('not resurrect an onChange resolver error when reset() restores the same value', async () => {
+    let resolveResolver:
+      | ((result: { values: unknown; errors: unknown }) => void)
+      | undefined;
+
+    const App = () => {
+      const {
+        register,
+        reset,
+        formState: { errors },
+      } = useForm<{ test: string }>({
+        mode: 'onChange',
+        defaultValues: { test: '' },
+        resolver: () =>
+          new Promise((resolve) => {
+            resolveResolver = resolve;
+          }),
+      });
+
+      return (
+        <div>
+          <input {...register('test')} />
+          <p>{`error:${errors.test ? errors.test.message : 'none'}`}</p>
+          <button type="button" onClick={() => reset({ test: 'invalid' })}>
+            reset
+          </button>
+        </div>
+      );
+    };
+
+    render(<App />);
+
+    await act(async () => {
+      fireEvent.change(screen.getByRole('textbox'), {
+        target: { value: 'invalid' },
+      });
+    });
+
+    await act(async () => {
+      fireEvent.click(screen.getByRole('button', { name: 'reset' }));
+    });
+
+    await act(async () => {
+      resolveResolver!({
+        values: {},
+        errors: { test: { type: 'manual', message: 'stale error' } },
+      });
+    });
+
+    expect(screen.getByText(/^error:/).textContent).toEqual('error:none');
+  });
+
+  // The discarded call must not clear validatingFields either, or a newer
+  // keystroke that is still waiting on the resolver reports itself as done.
+  it('keep a newer onChange validation marked as validating when a stale resolver from before reset settles', async () => {
+    const resolveCalls: Array<
+      (result: { values: unknown; errors: unknown }) => void
+    > = [];
+
+    const App = () => {
+      const {
+        register,
+        reset,
+        formState: { errors, isValidating, validatingFields },
+      } = useForm<{ test: string }>({
+        mode: 'onChange',
+        defaultValues: { test: '' },
+        resolver: () =>
+          new Promise((resolve) => {
+            resolveCalls.push(resolve);
+          }),
+      });
+
+      return (
+        <div>
+          <input {...register('test')} />
+          <p>{`error:${errors.test ? errors.test.message : 'none'}`}</p>
+          <p>{`validating:${isValidating}`}</p>
+          <p>{`validatingFields:${JSON.stringify(validatingFields)}`}</p>
+          <button
+            type="button"
+            onClick={() => reset(undefined, { keepValues: true })}
+          >
+            reset
+          </button>
+        </div>
+      );
+    };
+
+    render(<App />);
+
+    await act(async () => {
+      fireEvent.change(screen.getByRole('textbox'), {
+        target: { value: 'stale' },
+      });
+    });
+
+    await act(async () => {
+      fireEvent.click(screen.getByRole('button', { name: 'reset' }));
+    });
+
+    await act(async () => {
+      fireEvent.change(screen.getByRole('textbox'), {
+        target: { value: 'fresh' },
+      });
+    });
+
+    expect(resolveCalls).toHaveLength(2);
+    expect(screen.getByText(/^validating:/).textContent).toEqual(
+      'validating:true',
+    );
+
+    await act(async () => {
+      resolveCalls[0]({
+        values: {},
+        errors: { test: { type: 'manual', message: 'stale error' } },
+      });
+    });
+
+    expect(screen.getByText(/^error:/).textContent).toEqual('error:none');
+    expect(screen.getByText(/^validating:/).textContent).toEqual(
+      'validating:true',
+    );
+    expect(screen.getByText(/^validatingFields:/).textContent).toEqual(
+      'validatingFields:{"test":true}',
+    );
+
+    await act(async () => {
+      resolveCalls[1]({ values: { test: 'fresh' }, errors: {} });
+    });
+
+    expect(screen.getByText(/^validating:/).textContent).toEqual(
+      'validating:false',
+    );
+  });
+
+  // Control: with no intervening reset(), a slow onChange resolver result is
+  // still applied as usual.
+  it('apply a delayed onChange resolver error when reset() is not called', async () => {
+    let resolveResolver:
+      | ((result: { values: unknown; errors: unknown }) => void)
+      | undefined;
+
+    const App = () => {
+      const {
+        register,
+        formState: { errors },
+      } = useForm<{ test: string }>({
+        mode: 'onChange',
+        defaultValues: { test: '' },
+        resolver: () =>
+          new Promise((resolve) => {
+            resolveResolver = resolve;
+          }),
+      });
+
+      return (
+        <div>
+          <input {...register('test')} />
+          <p>{`error:${errors.test ? errors.test.message : 'none'}`}</p>
+        </div>
+      );
+    };
+
+    render(<App />);
+
+    await act(async () => {
+      fireEvent.change(screen.getByRole('textbox'), {
+        target: { value: 'invalid' },
+      });
+    });
+
+    await act(async () => {
+      resolveResolver!({
+        values: {},
+        errors: { test: { type: 'manual', message: 'stale error' } },
+      });
+    });
+
+    expect(screen.getByText(/^error:/).textContent).toEqual(
+      'error:stale error',
+    );
+  });
+  // #13744 guarded the resolver branch of onChange, but the built-in
+  // validation branch runs the same shape of async work and was left
+  // unguarded, so a `validate` promise that settles after reset() still
+  // writes its result into the cleaned form state.
+  it('not resurrect an onChange validate error that settles after reset', async () => {
+    let resolveValidate: ((result: string | boolean) => void) | undefined;
+
+    const App = () => {
+      const {
+        register,
+        reset,
+        formState: { errors },
+      } = useForm<{ test: string }>({
+        mode: 'onChange',
+        defaultValues: { test: '' },
+      });
+
+      return (
+        <div>
+          <input
+            {...register('test', {
+              validate: () =>
+                new Promise<string | boolean>((resolve) => {
+                  resolveValidate = resolve;
+                }),
+            })}
+          />
+          <p>{`error:${errors.test ? errors.test.message : 'none'}`}</p>
+          <button
+            type="button"
+            onClick={() => reset(undefined, { keepValues: true })}
+          >
+            reset
+          </button>
+        </div>
+      );
+    };
+
+    render(<App />);
+
+    await act(async () => {
+      fireEvent.change(screen.getByRole('textbox'), {
+        target: { value: 'invalid' },
+      });
+    });
+
+    // Sanity check: the keystroke really did start a validate call that is
+    // still pending.
+    expect(resolveValidate).toBeDefined();
+
+    await act(async () => {
+      fireEvent.click(screen.getByRole('button', { name: 'reset' }));
+    });
+
+    expect(screen.getByText(/^error:/).textContent).toEqual('error:none');
+
+    await act(async () => {
+      resolveValidate!('stale error');
+    });
+
+    expect(screen.getByText(/^error:/).textContent).toEqual('error:none');
+  });
+
+  // The isValid pass that follows an error-free field validation is a second
+  // suspension point, so a reset() landing there must discard its result too.
+  it('not apply a stale isValid computed by an onChange validation that spans reset', async () => {
+    const resolvers: Array<(result: string | boolean) => void> = [];
+
+    const App = () => {
+      const {
+        register,
+        reset,
+        formState: { isValid },
+      } = useForm<{ test: string }>({
+        mode: 'onChange',
+        defaultValues: { test: 'ok' },
+      });
+
+      return (
+        <div>
+          <input
+            {...register('test', {
+              validate: () =>
+                new Promise<string | boolean>((resolve) => {
+                  resolvers.push(resolve);
+                }),
+            })}
+          />
+          <p>{`valid:${isValid}`}</p>
+          <button
+            type="button"
+            onClick={() => reset(undefined, { keepValues: true })}
+          >
+            reset
+          </button>
+        </div>
+      );
+    };
+
+    render(<App />);
+
+    await act(async () => {
+      resolvers.splice(0).forEach((resolve) => resolve(true));
+    });
+
+    await act(async () => {
+      fireEvent.change(screen.getByRole('textbox'), {
+        target: { value: 'changed' },
+      });
+    });
+
+    // The keystroke's own field validation passes, which is what starts the
+    // separate isValid pass this test is about.
+    expect(resolvers).toHaveLength(1);
+
+    await act(async () => {
+      resolvers.splice(0, 1)[0](true);
+    });
+
+    expect(resolvers).toHaveLength(1);
+    expect(screen.getByText(/^valid:/).textContent).toEqual('valid:true');
+
+    await act(async () => {
+      fireEvent.click(screen.getByRole('button', { name: 'reset' }));
+    });
+
+    await act(async () => {
+      resolvers.splice(0, 1)[0]('stale error');
+    });
+
+    expect(screen.getByText(/^valid:/).textContent).toEqual('valid:true');
+  });
+
+  // Control: with no intervening reset(), a slow built-in validate result is
+  // still applied as usual.
+  it('apply a delayed onChange validate error when reset() is not called', async () => {
+    let resolveValidate: ((result: string | boolean) => void) | undefined;
+
+    const App = () => {
+      const {
+        register,
+        formState: { errors },
+      } = useForm<{ test: string }>({
+        mode: 'onChange',
+        defaultValues: { test: '' },
+      });
+
+      return (
+        <div>
+          <input
+            {...register('test', {
+              validate: () =>
+                new Promise<string | boolean>((resolve) => {
+                  resolveValidate = resolve;
+                }),
+            })}
+          />
+          <p>{`error:${errors.test ? errors.test.message : 'none'}`}</p>
+        </div>
+      );
+    };
+
+    render(<App />);
+
+    await act(async () => {
+      fireEvent.change(screen.getByRole('textbox'), {
+        target: { value: 'invalid' },
+      });
+    });
+
+    await act(async () => {
+      resolveValidate!('stale error');
+    });
+
+    expect(screen.getByText(/^error:/).textContent).toEqual(
+      'error:stale error',
+    );
+  });
+
+  it.each([
+    ['a validate rule', false],
+    ['a resolver', true],
+  ])(
+    'not apply a stale isValid pass from %s that spans a keepIsValid reset',
+    async (_, withResolver) => {
+      const checks: Array<(valid: boolean) => void> = [];
+      const check = () =>
+        new Promise<boolean>((resolve) => {
+          checks.push(resolve);
+        });
+
+      const App = () => {
+        const {
+          register,
+          reset,
+          formState: { isValid },
+        } = useForm<{ test: string }>({
+          defaultValues: { test: 'invalid' },
+          resolver: withResolver
+            ? async (values) => {
+                if (await check()) {
+                  return { values, errors: {} };
+                }
+                return {
+                  values: {},
+                  errors: { test: { type: 'manual', message: 'invalid' } },
+                };
+              }
+            : undefined,
+        });
+
+        return (
+          <div>
+            <input
+              {...register('test', {
+                validate: withResolver ? undefined : check,
+              })}
+            />
+            <p>{`valid:${isValid}`}</p>
+            <button
+              type="button"
+              onClick={() =>
+                reset({ test: 'still invalid' }, { keepIsValid: true })
+              }
+            >
+              reset
+            </button>
+          </div>
+        );
+      };
+
+      render(<App />);
+
+      await act(async () => {
+        checks.splice(0).forEach((complete) => complete(false));
+      });
+
+      expect(screen.getByText(/^valid:/).textContent).toEqual('valid:false');
+
+      // In onSubmit mode a keystroke only starts the isValid pass.
+      await act(async () => {
+        fireEvent.change(screen.getByRole('textbox'), {
+          target: { value: 'valid' },
+        });
+      });
+
+      expect(checks).toHaveLength(1);
+
+      await act(async () => {
+        fireEvent.click(screen.getByRole('button', { name: 'reset' }));
+      });
+
+      await act(async () => {
+        checks.splice(0, 1)[0](true);
+      });
+
+      expect(screen.getByText(/^valid:/).textContent).toEqual('valid:false');
+    },
+  );
+
+  it('keep a newer trigger validation marked as validating when a stale isValid pass settles after reset', async () => {
+    type Result = {
+      values: { test: string };
+      errors: FieldErrors<{ test: string }>;
+    };
+    const completions: Array<(value: Result) => void> = [];
+
+    const App = () => {
+      const {
+        register,
+        reset,
+        trigger,
+        formState: { isValid, validatingFields },
+      } = useForm<{ test: string }>({
+        defaultValues: { test: 'old' },
+        resolver: () =>
+          new Promise<Result>((resolve) => completions.push(resolve)),
+      });
+
+      return (
+        <div>
+          <input {...register('test')} />
+          <p>{`valid:${isValid}`}</p>
+          <p>{`validating:${!!validatingFields.test}`}</p>
+          <button type="button" onClick={() => void trigger('test')}>
+            trigger
+          </button>
+          <button
+            type="button"
+            onClick={() => reset({ test: 'new' }, { keepIsValid: true })}
+          >
+            reset
+          </button>
+        </div>
+      );
+    };
+
+    render(<App />);
+
+    await act(async () => {
+      completions
+        .splice(0)
+        .forEach((complete) =>
+          complete({ values: { test: 'old' }, errors: {} }),
+        );
+    });
+
+    await act(async () => {
+      fireEvent.change(screen.getByRole('textbox'), {
+        target: { value: 'changed' },
+      });
+    });
+
+    expect(completions).toHaveLength(1);
+    const completeStale = completions.splice(0, 1)[0];
+
+    await act(async () => {
+      fireEvent.click(screen.getByRole('button', { name: 'reset' }));
+    });
+
+    await act(async () => {
+      fireEvent.click(screen.getByRole('button', { name: 'trigger' }));
+    });
+
+    await act(async () => {
+      completeStale({ values: { test: 'changed' }, errors: {} });
+    });
+
+    expect(screen.getByText(/^validating:/).textContent).toEqual(
+      'validating:true',
+    );
+
+    await act(async () => {
+      completions.splice(0, 1)[0]({ values: { test: 'new' }, errors: {} });
+    });
+
+    expect(screen.getByText(/^validating:/).textContent).toEqual(
+      'validating:false',
+    );
+  });
+
+  // #13744 and #13745 guarded the resolver and per-field validation branches,
+  // but the form level `validate` option runs its own await inside
+  // validateForm() and still writes errors.form after reset() has cleaned up.
+  it('not resurrect a form level validate error that settles after reset', async () => {
+    let resolveValidate: ((result: string | boolean) => void) | undefined;
+
+    const App = () => {
+      const {
+        register,
+        reset,
+        formState: { errors },
+      } = useForm<{ test: string }>({
+        mode: 'onChange',
+        defaultValues: { test: '' },
+        validate: () =>
+          new Promise<string | boolean>((resolve) => {
+            resolveValidate = resolve;
+          }),
+      });
+
+      return (
+        <div>
+          <input {...register('test')} />
+          <p>{`error:${errors.form ? errors.form.message : 'none'}`}</p>
+          <button
+            type="button"
+            onClick={() => reset(undefined, { keepValues: true })}
+          >
+            reset
+          </button>
+        </div>
+      );
+    };
+
+    render(<App />);
+
+    await act(async () => {
+      fireEvent.change(screen.getByRole('textbox'), {
+        target: { value: 'invalid' },
+      });
+    });
+
+    // Sanity check: the keystroke really did start a form level validate call
+    // that is still pending.
+    expect(resolveValidate).toBeDefined();
+
+    await act(async () => {
+      fireEvent.click(screen.getByRole('button', { name: 'reset' }));
+    });
+
+    expect(screen.getByText(/^error:/).textContent).toEqual('error:none');
+
+    await act(async () => {
+      resolveValidate!('stale error');
+    });
+
+    expect(screen.getByText(/^error:/).textContent).toEqual('error:none');
+  });
+
+  it('not resurrect a form level validate error from trigger() that settles after reset', async () => {
+    const resolvers: Array<(result: string | boolean) => void> = [];
+
+    const App = () => {
+      const {
+        register,
+        reset,
+        trigger,
+        formState: { errors, isValid },
+      } = useForm<{ test: string }>({
+        defaultValues: { test: '' },
+        validate: () =>
+          new Promise<string | boolean>((resolve) => {
+            resolvers.push(resolve);
+          }),
+      });
+
+      return (
+        <div>
+          <input {...register('test')} />
+          <p>{`error:${errors.form ? errors.form.message : 'none'}`}</p>
+          <p>{`valid:${isValid}`}</p>
+          <button type="button" onClick={() => trigger()}>
+            trigger
+          </button>
+          <button
+            type="button"
+            onClick={() => reset(undefined, { keepValues: true })}
+          >
+            reset
+          </button>
+        </div>
+      );
+    };
+
+    render(<App />);
+
+    // Drain the isValid pass the mount kicks off so the only pending validate
+    // left is the one trigger() starts below.
+    await act(async () => {
+      resolvers.splice(0).forEach((resolve) => resolve(true));
+    });
+
+    await act(async () => {
+      fireEvent.click(screen.getByRole('button', { name: 'trigger' }));
+    });
+
+    expect(resolvers).toHaveLength(1);
+    expect(screen.getByText(/^valid:/).textContent).toEqual('valid:true');
+
+    await act(async () => {
+      fireEvent.click(screen.getByRole('button', { name: 'reset' }));
+    });
+
+    await act(async () => {
+      resolvers.splice(0, 1)[0]('stale error');
+    });
+
+    expect(screen.getByText(/^error:/).textContent).toEqual('error:none');
+    expect(screen.getByText(/^valid:/).textContent).toEqual('valid:true');
+  });
+
+  // A stale form level validate that passes must not wipe an error the form
+  // picked up after reset() either.
+  it('not clear a current form level error when a stale validate settles after reset', async () => {
+    const resolvers: Array<(result: string | boolean) => void> = [];
+
+    const App = () => {
+      const {
+        register,
+        reset,
+        setError,
+        trigger,
+        formState: { errors },
+      } = useForm<{ test: string }>({
+        defaultValues: { test: '' },
+        validate: () =>
+          new Promise<string | boolean>((resolve) => {
+            resolvers.push(resolve);
+          }),
+      });
+
+      return (
+        <div>
+          <input {...register('test')} />
+          <p>{`error:${errors.form ? errors.form.message : 'none'}`}</p>
+          <button type="button" onClick={() => trigger()}>
+            trigger
+          </button>
+          <button
+            type="button"
+            onClick={() => {
+              reset(undefined, { keepValues: true });
+              setError('form', { message: 'current error' });
+            }}
+          >
+            reset
+          </button>
+        </div>
+      );
+    };
+
+    render(<App />);
+
+    await act(async () => {
+      fireEvent.click(screen.getByRole('button', { name: 'trigger' }));
+    });
+
+    expect(resolvers).toHaveLength(1);
+
+    await act(async () => {
+      fireEvent.click(screen.getByRole('button', { name: 'reset' }));
+    });
+
+    expect(screen.getByText(/^error:/).textContent).toEqual(
+      'error:current error',
+    );
+
+    await act(async () => {
+      resolvers.splice(0, 1)[0](true);
+    });
+
+    expect(screen.getByText(/^error:/).textContent).toEqual(
+      'error:current error',
+    );
+  });
+
+  // Control: with no intervening reset(), a slow form level validate result is
+  // still applied as usual.
+  it('apply a delayed form level validate error when reset() is not called', async () => {
+    let resolveValidate: ((result: string | boolean) => void) | undefined;
+
+    const App = () => {
+      const {
+        register,
+        formState: { errors },
+      } = useForm<{ test: string }>({
+        mode: 'onChange',
+        defaultValues: { test: '' },
+        validate: () =>
+          new Promise<string | boolean>((resolve) => {
+            resolveValidate = resolve;
+          }),
+      });
+
+      return (
+        <div>
+          <input {...register('test')} />
+          <p>{`error:${errors.form ? errors.form.message : 'none'}`}</p>
+        </div>
+      );
+    };
+
+    render(<App />);
+
+    await act(async () => {
+      fireEvent.change(screen.getByRole('textbox'), {
+        target: { value: 'invalid' },
+      });
+    });
+
+    await act(async () => {
+      resolveValidate!('stale error');
+    });
+
+    expect(screen.getByText(/^error:/).textContent).toEqual(
+      'error:stale error',
+    );
+  });
+
+  it.each(['a resolver', 'a required rule', 'a form level validate'])(
+    'update isValid after reset() in a mount effect when the field is memoised, with %s',
+    async (validation) => {
+      const record = { title: 'Loaded record' };
+      const rules = { required: validation === 'a required rule' };
+
+      const TitleField = React.memo(function TitleField({
+        control,
+      }: {
+        control: Control<{ title: string }>;
+      }) {
+        const { field } = useController({ control, name: 'title', rules });
+        return <input {...field} />;
+      });
+
+      const App = () => {
+        const {
+          control,
+          reset,
+          formState: { isValid },
+        } = useForm<{ title: string }>({
+          defaultValues: record,
+          resolver:
+            validation === 'a resolver'
+              ? async (values) => ({ values, errors: {} })
+              : undefined,
+          validate:
+            validation === 'a form level validate'
+              ? async () => true
+              : undefined,
+        });
+
+        React.useEffect(() => {
+          reset(record);
+        }, [reset]);
+
+        return (
+          <div>
+            <TitleField control={control} />
+            <p>{`valid:${isValid}`}</p>
+          </div>
+        );
+      };
+
+      render(<App />);
+
+      expect(await screen.findByText('valid:true')).toBeVisible();
+    },
+  );
+
+  it('keep isValid false after reset() in a mount effect sets an invalid value the memoised fields do not show', async () => {
+    const settles: Array<() => void> = [];
+
+    const TitleField = React.memo(function TitleField({
+      control,
+    }: {
+      control: Control<{ title: string; id: string }>;
+    }) {
+      const { field } = useController({ control, name: 'title' });
+      return <input {...field} />;
+    });
+
+    const App = () => {
+      const {
+        control,
+        reset,
+        formState: { isValid },
+      } = useForm<{ title: string; id: string }>({
+        defaultValues: { title: 'Loaded record', id: '1' },
+        resolver: (values) => {
+          const result = values.id
+            ? { values, errors: {} }
+            : {
+                values: {},
+                errors: { id: { type: 'required', message: 'required' } },
+              };
+          return new Promise((resolve) => {
+            settles.push(() => resolve(result));
+          });
+        },
+      });
+
+      React.useEffect(() => {
+        reset({ title: 'Loaded record', id: '' });
+      }, [reset]);
+
+      return (
+        <div>
+          <TitleField control={control} />
+          <p>{`valid:${isValid}`}</p>
+        </div>
+      );
+    };
+
+    render(<App />);
+
+    await act(async () => {
+      settles.splice(0).forEach((settle) => settle());
+    });
+    // The pass run again for the reset values settles here.
+    await act(async () => {
+      settles.splice(0).forEach((settle) => settle());
+    });
+
+    expect(screen.getByText('valid:false')).toBeVisible();
+  });
+
+  describe('with keepFieldsRef and an input that does not re-render', () => {
+    // A cached element, as useMemo or the React Compiler leaves it, never re-runs
+    // register()'s ref callback, so it never re-adds its name to the mounted fields.
+    const App = () => {
+      const { register, reset, handleSubmit } = useForm<{ name: string }>({
+        defaultValues: { name: 'Saved' },
+        resetOptions: { keepFieldsRef: true },
+      });
+      const input = React.useMemo(
+        () => (
+          <input aria-label="name" {...register('name', { required: true })} />
+        ),
+        [register],
+      );
+
+      return (
+        <form onSubmit={handleSubmit(noop)}>
+          {input}
+          <button type="button" onClick={() => reset()}>
+            cancel
+          </button>
+          <button>save</button>
+        </form>
+      );
+    };
+
+    it('restore the input on every reset(), not only the first', () => {
+      render(<App />);
+      const input = screen.getByRole('textbox', { name: 'name' });
+      const cancel = screen.getByRole('button', { name: 'cancel' });
+
+      fireEvent.change(input, { target: { value: 'Edited' } });
+      fireEvent.click(cancel);
+      expect(input).toHaveValue('Saved');
+
+      fireEvent.change(input, { target: { value: 'Edited again' } });
+      fireEvent.click(cancel);
+      expect(input).toHaveValue('Saved');
+    });
+
+    it('focus the invalid input on a failed submit after reset()', async () => {
+      render(<App />);
+      const input = screen.getByRole('textbox', { name: 'name' });
+
+      fireEvent.change(input, { target: { value: 'Edited' } });
+      fireEvent.click(screen.getByRole('button', { name: 'cancel' }));
+      fireEvent.change(input, { target: { value: '' } });
+
+      await act(async () => {
+        fireEvent.click(screen.getByRole('button', { name: 'save' }));
+      });
+
+      expect(input).toHaveFocus();
+    });
   });
 });

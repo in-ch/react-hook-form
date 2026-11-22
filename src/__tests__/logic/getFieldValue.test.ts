@@ -16,7 +16,19 @@ jest.mock('../../logic/getCheckboxValue', () => ({
 }));
 
 describe('getFieldValue', () => {
-  it('should return correct value when type is radio', () => {
+  it('read selected values from a custom select ref without DOM methods', () => {
+    expect(
+      getFieldValue({
+        name: 'test',
+        ref: {
+          name: 'test',
+          type: 'select-multiple',
+          selectedOptions: [{ value: 'a' }],
+        },
+      } as Field['_f']),
+    ).toEqual(['a']);
+  });
+  it('return correct value when type is radio', () => {
     expect(
       getFieldValue({
         name: 'test',
@@ -28,7 +40,7 @@ describe('getFieldValue', () => {
     ).toBe(2);
   });
 
-  it('should return the correct value when type is checkbox', () => {
+  it('return the correct value when type is checkbox', () => {
     expect(
       getFieldValue({
         name: 'test',
@@ -40,7 +52,7 @@ describe('getFieldValue', () => {
     ).toBe('testValue');
   });
 
-  it('should return it value for other types', () => {
+  it('return it value for other types', () => {
     expect(
       getFieldValue({
         name: 'test',
@@ -53,11 +65,11 @@ describe('getFieldValue', () => {
     ).toBe('value');
   });
 
-  it('should return empty string when radio input value is not found', () => {
+  it('return empty string when radio input value is not found', () => {
     expect(getFieldValue({ ref: {} } as Field['_f'])).toEqual(undefined);
   });
 
-  it('should return files for input type file', () => {
+  it('return files for input type file', () => {
     expect(
       getFieldValue({
         name: 'test',
@@ -70,7 +82,7 @@ describe('getFieldValue', () => {
     ).toEqual(null);
   });
 
-  it('should return undefined when input is not found', () => {
+  it('return undefined when input is not found', () => {
     expect(
       getFieldValue({
         name: 'test',

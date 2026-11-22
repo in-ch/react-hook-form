@@ -7,17 +7,138 @@ import {
   waitFor,
 } from '@testing-library/react';
 
-import type { FieldErrors, ResolverResult } from '../../types';
+import { Controller } from '../../controller';
+import type { Control, FieldErrors, ResolverResult } from '../../types';
 import type { Resolver } from '../../types';
 import { useController } from '../../useController';
 import { useFieldArray } from '../../useFieldArray';
 import { useForm } from '../../useForm';
+import { FormProvider, useFormContext } from '../../useFormContext';
 import { useFormState } from '../../useFormState';
 import noop from '../../utils/noop';
 import sleep from '../../utils/sleep';
 
 describe('resolver', () => {
-  it('should update context within the resolver', async () => {
+  it('disables and re-enables overlapping object controls without corrupting their values', async () => {
+    type FormValues = {
+      requester: { name: string };
+    };
+    const onSubmit = jest.fn();
+    const App = () => {
+      const [disabled, setDisabled] = React.useState(false);
+      const {
+        control,
+        handleSubmit,
+        formState: { isValid },
+      } = useForm<FormValues>({
+        defaultValues: { requester: { name: 'Saved requester' } },
+        disabled,
+        resolver: (values) => ({ values, errors: {} }),
+      });
+      useController({ control, name: 'requester' });
+
+      return (
+        <form onSubmit={handleSubmit(onSubmit)}>
+          <p>{isValid ? 'Ready' : 'Checking'}</p>
+          <Controller
+            control={control}
+            name="requester.name"
+            render={({ field }) => (
+              <input {...field} aria-label="Requester name" />
+            )}
+          />
+          <button type="button" onClick={() => setDisabled((value) => !value)}>
+            {disabled ? 'Enable form' : 'Disable form'}
+          </button>
+          <button type="submit">Save</button>
+        </form>
+      );
+    };
+
+    render(<App />);
+    await screen.findByText('Ready');
+
+    fireEvent.click(screen.getByRole('button', { name: 'Disable form' }));
+    expect(
+      screen.getByRole('textbox', { name: 'Requester name' }),
+    ).toBeDisabled();
+    fireEvent.click(screen.getByRole('button', { name: 'Enable form' }));
+    expect(
+      screen.getByRole('textbox', { name: 'Requester name' }),
+    ).toBeEnabled();
+    expect(screen.getByRole('textbox', { name: 'Requester name' })).toHaveValue(
+      'Saved requester',
+    );
+
+    fireEvent.click(screen.getByRole('button', { name: 'Save' }));
+    await waitFor(() =>
+      expect(onSubmit).toHaveBeenCalledWith(
+        { requester: { name: 'Saved requester' } },
+        expect.anything(),
+      ),
+    );
+  });
+
+  it('not update useFormState subscribers while Controller is rendering after reset', async () => {
+    const consoleError = jest.spyOn(console, 'error').mockImplementation(noop);
+
+    const FieldLabel = ({ name }: { name: string }) => {
+      const { getFieldState } = useFormContext();
+      const formState = useFormState({ name });
+      const { error } = getFieldState(name, formState);
+
+      return <label data-error={!!error}>Username</label>;
+    };
+
+    const App = ({ username }: { username?: string }) => {
+      const form = useForm<{ username: string }>({
+        defaultValues: { username: '' },
+        resolver: async (values) => ({ values, errors: {} }),
+      });
+
+      React.useEffect(() => {
+        if (username) {
+          form.reset({ username });
+        }
+      }, [form, username]);
+
+      const isValid = form.formState.isValid;
+
+      return (
+        <FormProvider {...form}>
+          <Controller
+            control={form.control}
+            name="username"
+            render={({ field }) => (
+              <div>
+                <FieldLabel name="username" />
+                <input {...field} />
+                <span>{String(isValid)}</span>
+              </div>
+            )}
+          />
+        </FormProvider>
+      );
+    };
+
+    const { rerender } = render(<App />);
+
+    rerender(<App username="jane" />);
+
+    await waitFor(() =>
+      expect(screen.getByRole('textbox')).toHaveValue('jane'),
+    );
+
+    expect(
+      consoleError.mock.calls.some((call) =>
+        call[0]?.toString().includes('Cannot update a component'),
+      ),
+    ).toBe(false);
+
+    consoleError.mockRestore();
+  });
+
+  it('update context within the resolver', async () => {
     type FormValues = {
       test: string;
     };
@@ -63,7 +184,7 @@ describe('resolver', () => {
     ).toBeVisible();
   });
 
-  it('should support resolver schema switching', async () => {
+  it('support resolver schema switching', async () => {
     type FormValues = {
       test: string;
     };
@@ -128,7 +249,7 @@ describe('resolver', () => {
     expect(await screen.findByText('Submitted')).toBeVisible();
   });
 
-  it('should be called with the shouldUseNativeValidation option to true', async () => {
+  it('be called with the shouldUseNativeValidation option to true', async () => {
     const test = jest.fn();
     const resolver = (a: any, b: any, c: any) => {
       test(a, b, c);
@@ -162,7 +283,7 @@ describe('resolver', () => {
     );
   });
 
-  it('should avoid the problem of race condition', async () => {
+  it('avoid the problem of race condition', async () => {
     jest.useFakeTimers();
 
     type FormValues = {
@@ -238,7 +359,67 @@ describe('resolver', () => {
     expect(errorsObject).toEqual({});
   });
 
-  it('should submit a transformed value on success', async () => {
+  it('avoid a stale NaN result winning the race against a later number', async () => {
+    jest.useFakeTimers();
+
+    type FormValues = {
+      test: number;
+    };
+
+    let errorsObject: FieldErrors<FormValues> = {};
+
+    const resolver: Resolver<FormValues> = async (values) => {
+      if (Number.isNaN(values.test)) {
+        await sleep(100);
+        return {
+          errors: {
+            test: {
+              type: 'test',
+              message: 'wrong',
+            },
+          },
+          values: {},
+        };
+      }
+
+      return {
+        errors: {},
+        values,
+      };
+    };
+
+    const App = () => {
+      const {
+        register,
+        formState: { errors },
+      } = useForm<FormValues>({
+        resolver,
+        mode: 'onChange',
+      });
+      errorsObject = errors;
+
+      return (
+        <form>
+          <input {...register('test', { valueAsNumber: true })} />
+        </form>
+      );
+    };
+
+    render(<App />);
+
+    const input = screen.getByRole('textbox');
+
+    fireEvent.change(input, { target: { value: 'abc' } });
+    fireEvent.change(input, { target: { value: '5' } });
+
+    await act(async () => {
+      jest.advanceTimersByTime(200);
+    });
+
+    expect(errorsObject).toEqual({});
+  });
+
+  it('submit a transformed value on success', async () => {
     type FormValues = {
       alpha: string;
       beta: string;
@@ -275,7 +456,7 @@ describe('resolver', () => {
     ).toBeVisible();
   });
 
-  it('should submit field errors on failure', async () => {
+  it('submit field errors on failure', async () => {
     type FormValues = {
       alpha: string;
       beta: string;
@@ -352,7 +533,7 @@ describe('resolver', () => {
       return null;
     };
 
-    it('should batch state updates in onChange mode', async () => {
+    it('batch state updates in onChange mode', async () => {
       const stateEmissions: Array<{ errors: any; isValidating: boolean }> = [];
 
       const App = () => {
@@ -388,7 +569,89 @@ describe('resolver', () => {
       expect(stateEmissions[1].isValidating).toBe(false);
     });
 
-    it('should batch state updates in onBlur mode', async () => {
+    it('update isDirty after rapid changes with async resolver', async () => {
+      type DirtyState = { isDirty: boolean };
+      const dirtyStateEmissions: DirtyState[] = [];
+
+      const App = () => {
+        const { register, control } = useForm<FormValues>({
+          resolver: createResolver(),
+          mode: 'onChange',
+          defaultValues: { test: '' },
+        });
+        const { isDirty } = useFormState({ control });
+
+        React.useEffect(() => {
+          dirtyStateEmissions.push({ isDirty });
+        }, [isDirty]);
+
+        return <input {...register('test')} />;
+      };
+
+      render(<App />);
+      dirtyStateEmissions.length = 0;
+
+      fireEvent.change(screen.getByRole('textbox'), { target: { value: 'a' } });
+      fireEvent.change(screen.getByRole('textbox'), {
+        target: { value: 'ab' },
+      });
+      fireEvent.change(screen.getByRole('textbox'), {
+        target: { value: 'abc' },
+      });
+
+      await waitFor(() => {
+        expect(dirtyStateEmissions.some(({ isDirty }) => isDirty)).toBe(true);
+      });
+    });
+
+    it('propagate isDirty to a separate useFormState subscriber when Controller field.onChange is called twice in the same tick', async () => {
+      type FieldValues = { field: string };
+
+      function DirtyStatus({ control }: { control: Control<FieldValues> }) {
+        const { isDirty } = useFormState({ control });
+        return <p data-testid="dirty">{String(isDirty)}</p>;
+      }
+
+      const App = () => {
+        const { control } = useForm<FieldValues>({
+          resolver: async (data) => ({ values: data, errors: {} }),
+          mode: 'onChange',
+          defaultValues: { field: 'initial' },
+        });
+
+        return (
+          <>
+            <Controller
+              name="field"
+              control={control}
+              render={({ field }) => (
+                <button
+                  data-testid="double-change"
+                  onClick={() => {
+                    field.onChange('value-A');
+                    field.onChange('value-B');
+                  }}
+                >
+                  Two Changes
+                </button>
+              )}
+            />
+            <DirtyStatus control={control} />
+          </>
+        );
+      };
+
+      render(<App />);
+      expect(screen.getByTestId('dirty')).toHaveTextContent('false');
+
+      fireEvent.click(screen.getByTestId('double-change'));
+
+      await waitFor(() =>
+        expect(screen.getByTestId('dirty')).toHaveTextContent('true'),
+      );
+    });
+
+    it('batch state updates in onBlur mode', async () => {
       const stateEmissions: Array<{ errors: any; isValidating: boolean }> = [];
 
       const App = () => {
@@ -426,7 +689,7 @@ describe('resolver', () => {
       expect(stateEmissions[1].isValidating).toBe(false);
     });
 
-    it('should batch state updates when using trigger', async () => {
+    it('batch state updates when using trigger', async () => {
       const stateEmissions: Array<{ errors: any; isValidating: boolean }> = [];
 
       const App = () => {
@@ -464,7 +727,7 @@ describe('resolver', () => {
       expect(stateEmissions[1].isValidating).toBe(false);
     });
 
-    it('should not cause "Cannot update component while rendering" error with fieldArray and async validation', async () => {
+    it('not cause "Cannot update component while rendering" error with fieldArray and async validation', async () => {
       const consoleError = jest
         .spyOn(console, 'error')
         .mockImplementation(() => {});

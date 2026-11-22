@@ -5,13 +5,69 @@ import {
   render,
   renderHook,
   screen,
+  waitFor,
 } from '@testing-library/react';
 
 import { Controller } from '../../controller';
+import { useFieldArray } from '../../useFieldArray';
 import { useForm } from '../../useForm';
 
 describe('setValues', () => {
-  it('should batch update multiple values', async () => {
+  it('validate unchanged values when shouldValidate is enabled', async () => {
+    const { result } = renderHook(() =>
+      useForm({ defaultValues: { email: '' } }),
+    );
+    result.current.register('email', { required: 'Email is required' });
+    expect(result.current.formState.errors).toEqual({});
+
+    await act(async () => {
+      result.current.setValues({ email: '' }, { shouldValidate: true });
+    });
+
+    expect(result.current.formState.errors.email?.message).toBe(
+      'Email is required',
+    );
+  });
+
+  it('touch unchanged values when shouldTouch is enabled', async () => {
+    const { result } = renderHook(() =>
+      useForm({ defaultValues: { email: '' } }),
+    );
+    result.current.register('email');
+    expect(result.current.formState.touchedFields).toEqual({});
+
+    await act(async () => {
+      result.current.setValues({ email: '' }, { shouldTouch: true });
+    });
+
+    expect(result.current.formState.touchedFields).toEqual({ email: true });
+  });
+
+  it('update dirty state for unchanged values when shouldDirty is enabled', async () => {
+    const { result } = renderHook(() =>
+      useForm({ defaultValues: { email: '' } }),
+    );
+    result.current.register('email');
+    expect(result.current.formState.isDirty).toBe(false);
+    expect(result.current.formState.dirtyFields).toEqual({});
+
+    await act(async () => {
+      result.current.setValue('email', 'user@example.com');
+    });
+    expect(result.current.formState.isDirty).toBe(false);
+
+    await act(async () => {
+      result.current.setValues(
+        { email: 'user@example.com' },
+        { shouldDirty: true },
+      );
+    });
+
+    expect(result.current.formState.isDirty).toBe(true);
+    expect(result.current.formState.dirtyFields).toEqual({ email: true });
+  });
+
+  it('batch update multiple values', async () => {
     const { result } = renderHook(() =>
       useForm<{ a: string; b: string }>({
         defaultValues: { a: '1', b: '2' },
@@ -31,7 +87,7 @@ describe('setValues', () => {
     });
   });
 
-  it('should support function updater', async () => {
+  it('support function updater', async () => {
     const { result } = renderHook(() =>
       useForm<{ a: string; b: string }>({
         defaultValues: { a: '1', b: '2' },
@@ -51,7 +107,7 @@ describe('setValues', () => {
     });
   });
 
-  it('should not notify subscribers when batch values are unchanged', async () => {
+  it('not notify subscribers when batch values are unchanged', async () => {
     const { result } = renderHook(() =>
       useForm<{ a: string; b: string }>({
         defaultValues: { a: '1', b: '2' },
@@ -78,12 +134,15 @@ describe('setValues', () => {
     expect(valueNotifications).toHaveLength(0);
   });
 
-  it('should notify subscribers only once for batch update', async () => {
+  it('notify subscribers only once for batch update', async () => {
     const { result } = renderHook(() =>
       useForm<{ a: string; b: string }>({
         defaultValues: { a: '1', b: '2' },
       }),
     );
+
+    // Register a watch(fn) subscriber so values are included in notifications.
+    const watchSub = result.current.watch(() => {});
 
     const control = result.current.control as any;
     const nextSpy = jest.spyOn(control._subjects.state, 'next');
@@ -95,6 +154,8 @@ describe('setValues', () => {
       });
     });
 
+    watchSub.unsubscribe();
+
     const valueNotifications = nextSpy.mock.calls.filter(
       (call) =>
         call[0] != null &&
@@ -105,7 +166,7 @@ describe('setValues', () => {
     expect(valueNotifications).toHaveLength(1);
   });
 
-  it('should notify the batch update as a whole-form change (no stale name/type)', async () => {
+  it('notify the batch update as a whole-form change (no stale name/type)', async () => {
     const { result } = renderHook(() =>
       useForm<{ a: string; b: string }>({
         defaultValues: { a: '1', b: '2' },
@@ -119,6 +180,9 @@ describe('setValues', () => {
       result.current.setValue('a', 'changed', { shouldValidate: true });
     });
 
+    // Register a watch(fn) subscriber so values are included in notifications.
+    const watchSub = result.current.watch(() => {});
+
     const control = result.current.control as any;
     const nextSpy = jest.spyOn(control._subjects.state, 'next');
 
@@ -128,6 +192,8 @@ describe('setValues', () => {
         b: '20',
       });
     });
+
+    watchSub.unsubscribe();
 
     const valueNotifications = nextSpy.mock.calls.filter(
       (call) =>
@@ -145,7 +211,7 @@ describe('setValues', () => {
     expect(terminal.values).toEqual({ a: '10', b: '20' });
   });
 
-  it('should update controlled input value when setValues is called', async () => {
+  it('update controlled input value when setValues is called', async () => {
     const Component = () => {
       const { control, setValues } = useForm({
         defaultValues: {
@@ -183,7 +249,7 @@ describe('setValues', () => {
     expect(screen.getByRole('textbox')).toHaveValue('111');
   });
 
-  it('should update registered input value when setValues is called', async () => {
+  it('update registered input value when setValues is called', async () => {
     const Component = () => {
       const { register, setValues } = useForm({
         defaultValues: {
@@ -217,7 +283,72 @@ describe('setValues', () => {
     expect(screen.getByRole('textbox')).toHaveValue('111');
   });
 
-  it('should update deep nested registered input values when setValues is called', async () => {
+  it('not leave a stale element behind when setValues shrinks a field array', async () => {
+    const { result } = renderHook(() =>
+      useForm<{ test: { name: string }[] }>({
+        defaultValues: {
+          test: [{ name: 'a' }, { name: 'b' }, { name: 'c' }],
+        },
+      }),
+    );
+
+    result.current.register('test.0.name');
+    result.current.register('test.1.name');
+    result.current.register('test.2.name');
+
+    await act(async () => {
+      result.current.setValues({
+        test: [{ name: 'x' }, { name: 'y' }],
+      });
+    });
+
+    expect(result.current.getValues()).toEqual({
+      test: [{ name: 'x' }, { name: 'y' }],
+    });
+  });
+
+  it('handle setValues shrinking a field array down to empty', async () => {
+    const { result } = renderHook(() =>
+      useForm<{ test: { name: string }[] }>({
+        defaultValues: {
+          test: [{ name: 'a' }, { name: 'b' }],
+        },
+      }),
+    );
+
+    result.current.register('test.0.name');
+    result.current.register('test.1.name');
+
+    await act(async () => {
+      result.current.setValues({
+        test: [],
+      });
+    });
+
+    expect(result.current.getValues()).toEqual({ test: [] });
+  });
+
+  it('still propagate an explicitly set undefined value to a mounted field', async () => {
+    const { result } = renderHook(() =>
+      useForm<{ a: string | undefined; b: string }>({
+        defaultValues: { a: '1', b: '2' },
+      }),
+    );
+
+    result.current.register('a');
+    result.current.register('b');
+
+    await act(async () => {
+      result.current.setValues({
+        a: undefined,
+        b: '2',
+      });
+    });
+
+    expect(result.current.getValues()).toEqual({ a: undefined, b: '2' });
+  });
+
+  it('update deep nested registered input values when setValues is called', async () => {
     const Component = () => {
       const { register, setValues } = useForm({
         defaultValues: {
@@ -264,7 +395,7 @@ describe('setValues', () => {
     expect(screen.getByLabelText('city')).toHaveValue('New York');
   });
 
-  it('should preserve object references for untouched values instead of deep cloning per field', async () => {
+  it('preserve object references for untouched values instead of deep cloning per field', async () => {
     type FormValues = {
       a: { nested: string };
       b: { nested: string };
@@ -295,22 +426,17 @@ describe('setValues', () => {
     expect(values.b).toBe(nextB);
   });
 
-  it('should not deep clone the form tree per field in setFieldValue broadcasts during setValues', async () => {
+  it('emit exactly one state notification for a setValues batch', async () => {
     const { result } = renderHook(() =>
-      useForm<{ a: { nested: string } }>({
-        defaultValues: { a: { nested: '1' } },
+      useForm<{ a: { nested: string }; b: string }>({
+        defaultValues: { a: { nested: '1' }, b: 'x' },
       }),
     );
 
-    // Registering on a non-input element gives the field a ref with no `type`,
-    // which is the setFieldValue branch that broadcasts the form tree. The
-    // value stored in _formValues is reference-preserved regardless of
-    // skipClone, so this optimization is only observable at the broadcast
-    // boundary: the per-field snapshot must be the live tree, not an
-    // O(formSize) deep clone produced once per mounted field.
-    const ref = document.createElement('div');
+    const refA = document.createElement('div');
     act(() => {
-      result.current.register('a').ref(ref);
+      result.current.register('a').ref(refA);
+      result.current.register('b');
     });
 
     const deliveredValues: object[] = [];
@@ -320,18 +446,629 @@ describe('setValues', () => {
     });
 
     await act(async () => {
-      result.current.setValues({ a: { nested: '10' } });
+      result.current.setValues({ a: { nested: '10' }, b: 'y' });
     });
     unsubscribe();
 
-    // The setFieldValue !ref.type branch and the _setValue broadcast both fire
-    // for this field, so a batch produces multiple notifications.
-    expect(deliveredValues.length).toBeGreaterThan(1);
-    // skipClone must be threaded through setFieldValue: every per-field
-    // broadcast reuses the one live form tree. A per-field deep clone would
-    // instead hand subscribers distinct object identities.
-    for (const values of deliveredValues) {
-      expect(values).toBe(deliveredValues[0]);
-    }
+    // All per-field emissions are suppressed; only the single final broadcast fires.
+    expect(deliveredValues.length).toBe(1);
+    expect(deliveredValues[0]).toEqual({ a: { nested: '10' }, b: 'y' });
+  });
+
+  it('propagate shouldValidate option to trigger validation and update isValid', async () => {
+    const { result } = renderHook(() =>
+      useForm<{ firstName: string }>({
+        defaultValues: { firstName: '' },
+        mode: 'onChange',
+      }),
+    );
+
+    // Register the field with required validation
+    act(() => {
+      result.current.register('firstName', { required: true });
+    });
+
+    // Initially form should be invalid (empty required field)
+    expect(result.current.formState.isValid).toBe(false);
+
+    // Set value with shouldValidate to trigger validation
+    await act(async () => {
+      result.current.setValues({ firstName: 'John' }, { shouldValidate: true });
+    });
+
+    // Form should now be valid
+    expect(result.current.formState.isValid).toBe(true);
+    expect(result.current.getValues().firstName).toBe('John');
+  });
+
+  it('propagate shouldDirty and shouldTouch options', async () => {
+    const { result } = renderHook(() =>
+      useForm<{ firstName: string; lastName: string }>({
+        defaultValues: { firstName: '', lastName: '' },
+      }),
+    );
+
+    // Register fields
+    act(() => {
+      result.current.register('firstName');
+      result.current.register('lastName');
+    });
+
+    // Set values with shouldDirty and shouldTouch
+    await act(async () => {
+      result.current.setValues(
+        { firstName: 'John', lastName: 'Doe' },
+        { shouldDirty: true, shouldTouch: true },
+      );
+    });
+
+    // Check that fields are marked as dirty and touched
+    expect(result.current.formState.dirtyFields).toEqual({
+      firstName: true,
+      lastName: true,
+    });
+    expect(result.current.formState.touchedFields).toEqual({
+      firstName: true,
+      lastName: true,
+    });
+  });
+
+  it('clear errors and update isValid when revalidating with setValues', async () => {
+    const { result } = renderHook(() =>
+      useForm<{ email: string }>({
+        defaultValues: { email: '' },
+        mode: 'onChange',
+      }),
+    );
+
+    // Register the field with required and email validation
+    act(() => {
+      result.current.register('email', {
+        required: 'Email is required',
+        pattern: {
+          value: /^[A-Z0-9._%+-]+@[A-Z0-9.-]+\.[A-Z]{2,}$/i,
+          message: 'Invalid email address',
+        },
+      });
+    });
+
+    // Initially form should be invalid
+    expect(result.current.formState.isValid).toBe(false);
+    expect(result.current.formState.errors.email).toBeUndefined();
+
+    // Trigger validation by touching the field (should show error)
+    await act(async () => {
+      result.current.trigger('email');
+    });
+
+    // Should have error after validation
+    expect(result.current.formState.errors.email).toBeDefined();
+    expect(result.current.formState.isValid).toBe(false);
+
+    // Set invalid value with validation - should still be invalid
+    await act(async () => {
+      result.current.setValues({ email: 'invalid' }, { shouldValidate: true });
+    });
+
+    expect(result.current.formState.isValid).toBe(false);
+    expect(result.current.formState.errors.email).toBeDefined();
+
+    // Set valid value with validation - should become valid and clear error
+    await act(async () => {
+      result.current.setValues(
+        { email: 'test@example.com' },
+        { shouldValidate: true },
+      );
+    });
+
+    expect(result.current.formState.isValid).toBe(true);
+    expect(result.current.formState.errors.email).toBeUndefined();
+    expect(result.current.getValues().email).toBe('test@example.com');
+  });
+
+  it('validate multiple fields and update isValid correctly', async () => {
+    const { result } = renderHook(() =>
+      useForm<{ username: string; email: string; age: number }>({
+        defaultValues: { username: '', email: '', age: 0 },
+        mode: 'onChange',
+      }),
+    );
+
+    // Register fields with validation
+    act(() => {
+      result.current.register('username', {
+        required: 'Username is required',
+        minLength: {
+          value: 3,
+          message: 'Username must be at least 3 characters',
+        },
+      });
+      result.current.register('email', {
+        required: 'Email is required',
+        pattern: {
+          value: /^[A-Z0-9._%+-]+@[A-Z0-9.-]+\.[A-Z]{2,}$/i,
+          message: 'Invalid email',
+        },
+      });
+      result.current.register('age', {
+        required: 'Age is required',
+        min: { value: 18, message: 'Must be at least 18' },
+      });
+    });
+
+    // Initially all fields are invalid
+    expect(result.current.formState.isValid).toBe(false);
+
+    // Set all values with validation at once
+    await act(async () => {
+      result.current.setValues(
+        {
+          username: 'john',
+          email: 'john@example.com',
+          age: 25,
+        },
+        { shouldValidate: true },
+      );
+    });
+
+    // All fields should be valid now
+    expect(result.current.formState.isValid).toBe(true);
+    expect(result.current.formState.errors).toEqual({});
+    expect(result.current.getValues()).toEqual({
+      username: 'john',
+      email: 'john@example.com',
+      age: 25,
+    });
+
+    // Now set one invalid value - should become invalid
+    await act(async () => {
+      result.current.setValues({ username: 'ab' }, { shouldValidate: true });
+    });
+
+    expect(result.current.formState.isValid).toBe(false);
+    expect(result.current.formState.errors.username).toBeDefined();
+  });
+
+  it('update a multiple select registered under an array value', async () => {
+    const Component = () => {
+      const { register, setValues } = useForm<{ tags: string[] }>({
+        defaultValues: { tags: ['a'] },
+      });
+
+      return (
+        <>
+          <select multiple {...register('tags')} aria-label="tags">
+            <option value="a">a</option>
+            <option value="b">b</option>
+            <option value="c">c</option>
+          </select>
+          <button type="button" onClick={() => setValues({ tags: ['b', 'c'] })}>
+            set
+          </button>
+        </>
+      );
+    };
+
+    render(<Component />);
+
+    act(() => {
+      fireEvent.click(screen.getByRole('button', { name: 'set' }));
+    });
+
+    const select = screen.getByLabelText('tags') as HTMLSelectElement;
+
+    expect(
+      Array.from(select.selectedOptions, (option) => option.value),
+    ).toEqual(['b', 'c']);
+  });
+
+  it('update a checkbox group registered under an array value', async () => {
+    const Component = () => {
+      const { register, setValues } = useForm<{ choices: string[] }>({
+        defaultValues: { choices: ['a'] },
+      });
+
+      return (
+        <>
+          <input
+            type="checkbox"
+            value="a"
+            {...register('choices')}
+            aria-label="a"
+          />
+          <input
+            type="checkbox"
+            value="b"
+            {...register('choices')}
+            aria-label="b"
+          />
+          <button type="button" onClick={() => setValues({ choices: ['b'] })}>
+            set
+          </button>
+        </>
+      );
+    };
+
+    render(<Component />);
+
+    act(() => {
+      fireEvent.click(screen.getByRole('button', { name: 'set' }));
+    });
+
+    expect(screen.getByLabelText('a')).not.toBeChecked();
+    expect(screen.getByLabelText('b')).toBeChecked();
+  });
+
+  it('clear a multiple select when an empty array is provided', async () => {
+    const Component = () => {
+      const { register, setValues } = useForm<{ tags: string[] }>({
+        defaultValues: { tags: ['a'] },
+      });
+
+      return (
+        <>
+          <select multiple {...register('tags')} aria-label="tags">
+            <option value="a">a</option>
+            <option value="b">b</option>
+          </select>
+          <button type="button" onClick={() => setValues({ tags: [] })}>
+            set
+          </button>
+        </>
+      );
+    };
+
+    render(<Component />);
+
+    act(() => {
+      fireEvent.click(screen.getByRole('button', { name: 'set' }));
+    });
+
+    const select = screen.getByLabelText('tags') as HTMLSelectElement;
+
+    expect(select.selectedOptions).toHaveLength(0);
+  });
+
+  it('not validate when shouldValidate is not provided', async () => {
+    const { result } = renderHook(() =>
+      useForm<{ firstName: string }>({
+        defaultValues: { firstName: '' },
+        mode: 'onChange',
+      }),
+    );
+
+    // Register the field with required validation
+    act(() => {
+      result.current.register('firstName', { required: true });
+    });
+
+    // Initially form should be invalid
+    expect(result.current.formState.isValid).toBe(false);
+
+    // Set value without shouldValidate - should not trigger validation
+    await act(async () => {
+      result.current.setValues({ firstName: 'John' });
+    });
+
+    // Value is set but validation is not triggered
+    expect(result.current.getValues().firstName).toBe('John');
+    // isValid might still be false because validation wasn't re-run
+    expect(result.current.formState.isValid).toBe(false);
+  });
+
+  it('render the rows of a field array grown by setValues', async () => {
+    const App = () => {
+      const { register, control, setValues } = useForm<{
+        items: { name: string }[];
+      }>({
+        defaultValues: { items: [{ name: 'a' }] },
+      });
+      const { fields } = useFieldArray({ control, name: 'items' });
+
+      return (
+        <form>
+          {fields.map((field, index) => (
+            <input key={field.id} {...register(`items.${index}.name`)} />
+          ))}
+          <button
+            type="button"
+            onClick={() => setValues({ items: [{ name: 'x' }, { name: 'y' }] })}
+          >
+            load
+          </button>
+        </form>
+      );
+    };
+
+    render(<App />);
+
+    fireEvent.click(screen.getByRole('button'));
+
+    expect(await screen.findAllByRole('textbox')).toHaveLength(2);
+    expect(screen.getAllByRole('textbox')[1]).toHaveValue('y');
+  });
+
+  it('remove the rows of a field array shrunk by setValues', async () => {
+    const onSubmit = jest.fn();
+    const App = () => {
+      const { register, control, setValues, handleSubmit } = useForm<{
+        items: { name: string }[];
+      }>({
+        defaultValues: { items: [{ name: 'a' }, { name: 'b' }] },
+      });
+      const { fields } = useFieldArray({ control, name: 'items' });
+
+      return (
+        <form onSubmit={handleSubmit(onSubmit)}>
+          {fields.map((field, index) => (
+            <input key={field.id} {...register(`items.${index}.name`)} />
+          ))}
+          <button
+            type="button"
+            onClick={() => setValues({ items: [{ name: 'x' }] })}
+          >
+            load
+          </button>
+          <button>submit</button>
+        </form>
+      );
+    };
+
+    render(<App />);
+
+    fireEvent.click(screen.getByRole('button', { name: 'load' }));
+
+    expect(screen.getAllByRole('textbox')).toHaveLength(1);
+
+    fireEvent.input(screen.getByRole('textbox'), {
+      target: { value: 'typed' },
+    });
+    fireEvent.click(screen.getByRole('button', { name: 'submit' }));
+
+    await waitFor(() =>
+      expect(onSubmit).toHaveBeenCalledWith(
+        { items: [{ name: 'typed' }] },
+        expect.anything(),
+      ),
+    );
+  });
+
+  it('validate a field array with rules once when setValues resizes it', async () => {
+    const validate = jest.fn(() => true);
+    const App = () => {
+      const { register, control, setValues } = useForm<{
+        items: { name: string }[];
+      }>({
+        defaultValues: { items: [{ name: 'a' }] },
+      });
+      const { fields } = useFieldArray({
+        control,
+        name: 'items',
+        rules: { validate },
+      });
+
+      return (
+        <form>
+          {fields.map((field, index) => (
+            <input key={field.id} {...register(`items.${index}.name`)} />
+          ))}
+          <button
+            type="button"
+            onClick={() =>
+              setValues(
+                { items: [{ name: 'x' }, { name: 'y' }] },
+                { shouldValidate: true },
+              )
+            }
+          >
+            load
+          </button>
+        </form>
+      );
+    };
+
+    render(<App />);
+
+    fireEvent.click(screen.getByRole('button'));
+
+    expect(await screen.findAllByRole('textbox')).toHaveLength(2);
+    await waitFor(() => expect(validate).toHaveBeenCalledTimes(1));
+  });
+
+  it('mark the form dirty when shouldDirty fills an empty field array', async () => {
+    const { result } = renderHook(() => {
+      const methods = useForm<{ items: { name: string }[] }>({
+        defaultValues: { items: [] },
+      });
+      useFieldArray({ control: methods.control, name: 'items' });
+      methods.formState.isDirty;
+      methods.formState.dirtyFields;
+      return methods;
+    });
+
+    await act(async () => {
+      result.current.setValues(
+        { items: [{ name: 'x' }] },
+        { shouldDirty: true },
+      );
+    });
+
+    expect(result.current.formState.dirtyFields).toEqual({
+      items: [{ name: true }],
+    });
+    expect(result.current.formState.isDirty).toBe(true);
+  });
+
+  it.each([false, true])(
+    'track unregistered values when shouldDirty is set (mounted sibling: %s)',
+    async (mountedSibling) => {
+      const { result } = renderHook(() => {
+        const methods = useForm({
+          defaultValues: { firstStep: 'before', nextStep: 'before' },
+        });
+        if (mountedSibling) methods.register('firstStep');
+        methods.formState.isDirty;
+        methods.formState.dirtyFields;
+        return methods;
+      });
+
+      await act(async () => {
+        result.current.setValues(
+          { firstStep: 'before', nextStep: 'after' },
+          { shouldDirty: true },
+        );
+      });
+
+      expect(result.current.getValues('nextStep')).toBe('after');
+      expect(result.current.formState.isDirty).toBe(true);
+      expect(result.current.formState.dirtyFields).toEqual({ nextStep: true });
+
+      await act(async () => {
+        result.current.setValues(
+          { firstStep: 'before', nextStep: 'before' },
+          { shouldDirty: true },
+        );
+      });
+
+      expect(result.current.formState.isDirty).toBe(false);
+      expect(result.current.formState.dirtyFields).toEqual({});
+    },
+  );
+
+  it.each([undefined, false])(
+    'keep dirty state unchanged with shouldDirty=%s for unregistered values',
+    async (shouldDirty) => {
+      const { result } = renderHook(() => {
+        const methods = useForm({ defaultValues: { draft: 'before' } });
+        methods.formState.isDirty;
+        methods.formState.dirtyFields;
+        return methods;
+      });
+
+      await act(async () => {
+        result.current.setValues({ draft: 'after' }, { shouldDirty });
+      });
+
+      expect(result.current.getValues('draft')).toBe('after');
+      expect(result.current.formState.isDirty).toBe(false);
+      expect(result.current.formState.dirtyFields).toEqual({});
+    },
+  );
+  it.each(['isDirty', 'dirtyFields'] as const)(
+    'updates an unregistered value with only %s subscribed',
+    async (subscription) => {
+      const { result } = renderHook(() => {
+        const methods = useForm({
+          defaultValues: { draft: 'before', other: '' },
+        });
+        methods.formState[subscription];
+        return methods;
+      });
+      await act(async () => {
+        result.current.setValues({ draft: 'after' }, { shouldDirty: true });
+      });
+      expect(result.current.formState[subscription]).toEqual(
+        subscription === 'isDirty' ? true : { draft: true },
+      );
+      await act(async () => {
+        result.current.setValues({ draft: 'before' }, { shouldDirty: true });
+      });
+      expect(result.current.formState[subscription]).toEqual(
+        subscription === 'isDirty' ? false : {},
+      );
+    },
+  );
+
+  it('updates only the supplied subtree and preserves unrelated dirty fields', async () => {
+    const { result } = renderHook(() => {
+      const methods = useForm({
+        defaultValues: { profile: { city: 'before', name: 'same' }, other: '' },
+      });
+      methods.formState.isDirty;
+      methods.formState.dirtyFields;
+      return methods;
+    });
+    await act(async () => {
+      result.current.setValues({ other: 'dirty' }, { shouldDirty: true });
+      result.current.setValues(
+        { profile: { city: 'after', name: 'same' } },
+        { shouldDirty: true },
+      );
+    });
+    expect(result.current.formState.dirtyFields).toEqual({
+      profile: { city: true },
+      other: true,
+    });
+    await act(async () => {
+      result.current.setValues(
+        { profile: { city: 'before', name: 'same' } },
+        { shouldDirty: true },
+      );
+    });
+    expect(result.current.formState.dirtyFields).toEqual({ other: true });
+    expect(result.current.formState.isDirty).toBe(true);
+    await act(async () => {
+      result.current.setValues({ other: '' }, { shouldDirty: true });
+    });
+    expect(result.current.formState.dirtyFields).toEqual({});
+    expect(result.current.formState.isDirty).toBe(false);
+  });
+
+  it('tracks nested unregistered arrays and clears removed values', async () => {
+    const { result } = renderHook(() => {
+      const methods = useForm({
+        defaultValues: {
+          items: [{ value: 'before' }],
+          optional: 'before' as string | undefined,
+        },
+      });
+      methods.formState.isDirty;
+      methods.formState.dirtyFields;
+      return methods;
+    });
+    await act(async () => {
+      result.current.setValues(
+        { items: [{ value: 'after' }], optional: undefined },
+        { shouldDirty: true },
+      );
+    });
+    expect(result.current.formState.dirtyFields).toEqual({
+      items: [{ value: true }],
+      optional: true,
+    });
+    await act(async () => {
+      result.current.setValues(
+        { items: [{ value: 'before' }], optional: 'before' },
+        { shouldDirty: true },
+      );
+    });
+    expect(result.current.formState.dirtyFields).toEqual({});
+    expect(result.current.formState.isDirty).toBe(false);
+  });
+
+  it('notify dirty-state subscribers once for a batch of unregistered values', () => {
+    const { result } = renderHook(() =>
+      useForm({ defaultValues: { first: '', second: '' } }),
+    );
+    const callback = jest.fn();
+    const unsubscribe = result.current.subscribe({
+      formState: { values: true, isDirty: true, dirtyFields: true },
+      callback,
+    });
+
+    act(() => {
+      result.current.setValues(
+        { first: 'one', second: 'two' },
+        { shouldDirty: true },
+      );
+    });
+
+    expect(callback).toHaveBeenCalledTimes(1);
+    expect(callback.mock.calls[0][0]).toMatchObject({
+      isDirty: true,
+      dirtyFields: { first: true, second: true },
+      values: { first: 'one', second: 'two' },
+    });
+    unsubscribe();
   });
 });

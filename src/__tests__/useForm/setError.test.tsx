@@ -12,12 +12,85 @@ import type {
   DeepMap,
   ErrorOption,
   FieldError,
+  FieldErrors,
   GlobalError,
+  UseFormSetError,
 } from '../../types';
 import { useForm } from '../../useForm';
 import { FormProvider, useFormContext } from '../../useFormContext';
 
 describe('setError', () => {
+  it.each(['radio', 'checkbox'] as const)(
+    'should focus enabled %s options only when requested',
+    (type) => {
+      const App = () => {
+        const { register, setError } = useForm<{ choice: string }>();
+        return (
+          <>
+            <input
+              aria-label="disabled"
+              type={type}
+              value="first"
+              disabled
+              {...register('choice')}
+            />
+            <input
+              aria-label="enabled"
+              type={type}
+              value="second"
+              {...register('choice')}
+            />
+            <button onClick={() => setError('choice', { type: 'manual' })}>
+              no focus
+            </button>
+            <button
+              onClick={() =>
+                setError('choice', { type: 'manual' }, { shouldFocus: true })
+              }
+            >
+              focus
+            </button>
+          </>
+        );
+      };
+      render(<App />);
+      const enabled = screen.getByLabelText('enabled');
+      fireEvent.click(screen.getByRole('button', { name: 'no focus' }));
+      expect(enabled).not.toHaveFocus();
+      fireEvent.click(screen.getByRole('button', { name: 'focus' }));
+      expect(enabled).toHaveFocus();
+    },
+  );
+
+  it.each(['radio', 'checkbox'] as const)(
+    'should not focus an entirely disabled %s group',
+    (type) => {
+      const App = () => {
+        const { register, setError } = useForm<{ choice: string }>();
+        return (
+          <>
+            <input
+              aria-label="disabled"
+              type={type}
+              disabled
+              {...register('choice')}
+            />
+            <button
+              onClick={() =>
+                setError('choice', { type: 'manual' }, { shouldFocus: true })
+              }
+            >
+              focus
+            </button>
+          </>
+        );
+      };
+      render(<App />);
+      fireEvent.click(screen.getByRole('button'));
+      expect(screen.getByLabelText('disabled')).not.toHaveFocus();
+    },
+  );
+
   const tests: [string, ErrorOption, DeepMap<any, FieldError>][] = [
     [
       'should only set an error when it is not existed',
@@ -71,7 +144,7 @@ describe('setError', () => {
     expect(result.current.formState.isValid).toBeFalsy();
   });
 
-  it('should update isValid with setError', async () => {
+  it('update isValid with setError', async () => {
     const App = () => {
       const {
         formState: { isValid },
@@ -104,7 +177,7 @@ describe('setError', () => {
     expect(await screen.findByText('no')).toBeVisible();
   });
 
-  it('should allow to set global error', async () => {
+  it('allow setting global error', async () => {
     const onSubmit = jest.fn();
 
     type Errors = {
@@ -177,7 +250,7 @@ describe('setError', () => {
     });
   });
 
-  it('should allow sequential calls to set with child after ancestor', async () => {
+  it('allow sequential calls to set with child after ancestor', async () => {
     const { result } = renderHook(() =>
       useForm<{ input: { first: string; last: string } }>(),
     );
@@ -219,7 +292,7 @@ describe('setError', () => {
     });
   });
 
-  it('should allow sequential calls to set with ancestor after child', async () => {
+  it('allow sequential calls to set with ancestor after child', async () => {
     const { result } = renderHook(() =>
       useForm<{ input: { first: string; last: string } }>(),
     );
@@ -262,10 +335,115 @@ describe('setError', () => {
         },
       },
     });
+  });
+
+  it('cancel pending delayError timers for nested fields when setError is called on the parent', async () => {
+    jest.useFakeTimers();
+
+    const App = () => {
+      const {
+        register,
+        setError,
+        formState: { errors },
+      } = useForm<{ parent: { child: string } }>({
+        delayError: 500,
+        mode: 'onChange',
+      });
+
+      return (
+        <div>
+          <input
+            {...register('parent.child', {
+              maxLength: { value: 3, message: 'too long' },
+            })}
+          />
+          <button
+            type="button"
+            onClick={() =>
+              setError('parent', { type: 'server', message: 'server error' })
+            }
+          >
+            setError
+          </button>
+          {errors.parent?.child && <p>child error</p>}
+          {errors.parent?.message && <p>{errors.parent.message}</p>}
+        </div>
+      );
+    };
+
+    render(<App />);
+
+    // Schedule a delayed child error, then call setError on the parent
+    // before the delay elapses.
+    await act(async () => {
+      fireEvent.change(screen.getByRole('textbox'), {
+        target: { value: 'toolong' },
+      });
+    });
+
+    fireEvent.click(screen.getByRole('button'));
+
+    await act(async () => {
+      jest.advanceTimersByTime(500);
+    });
+
+    expect(screen.queryByText('child error')).not.toBeInTheDocument();
+    expect(screen.getByText('server error')).toBeVisible();
+
+    jest.useRealTimers();
+  });
+
+  it('replace types from a previous validation when overwriting an error', async () => {
+    type FormValues = { password: string };
+
+    let currentErrors: FieldErrors<FormValues> = {};
+    let setError: UseFormSetError<FormValues>;
+
+    const App = () => {
+      const form = useForm<FormValues>({
+        criteriaMode: 'all',
+        mode: 'onChange',
+      });
+
+      currentErrors = form.formState.errors;
+      setError = form.setError;
+
+      return (
+        <input
+          {...form.register('password', {
+            minLength: { value: 8, message: 'too short' },
+            pattern: { value: /[0-9]/, message: 'needs a digit' },
+          })}
+        />
+      );
+    };
+
+    render(<App />);
+
+    await act(async () => {
+      fireEvent.change(screen.getByRole('textbox'), {
+        target: { value: 'abc' },
+      });
+    });
+
+    expect(currentErrors.password?.types).toEqual({
+      minLength: 'too short',
+      pattern: 'needs a digit',
+    });
+
+    await act(async () => {
+      setError('password', { type: 'server', message: 'breached password' });
+    });
+
+    // criteriaMode: 'all' consumers render from `types`, so keeping the previous
+    // validation's entries there shows resolved rules and hides the new error.
+    expect(currentErrors.password?.types).toBeUndefined();
+    expect(currentErrors.password?.type).toBe('server');
+    expect(currentErrors.password?.message).toBe('breached password');
   });
 });
 
-it('should update error state in FormProvider when setError is called in useEffect', async () => {
+it('update error state in FormProvider when setError is called in useEffect', async () => {
   type FormValues = {
     firstname: string;
     lastname: string;

@@ -1,11 +1,11 @@
 import React from 'react';
 import { renderToString } from 'react-dom/server';
 
-import { FormStateSubscribe } from '../formStateSubscribe';
+import { FormStateSubscribe } from '../formState';
 import { useForm } from '../useForm';
 
 describe('FormStateSubscribe with SSR', () => {
-  it('should render correctly', () => {
+  it('render correctly', () => {
     const Component = () => {
       const { control } = useForm<{
         test: string;

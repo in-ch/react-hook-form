@@ -29,8 +29,8 @@ https://user-images.githubusercontent.com/10513364/152621466-59a41c65-52b4-4518-
 - Built with performance, UX and DX in mind
 - Embraces native HTML form [validation](https://react-hook-form.com/get-started#Applyvalidation)
 - Out of the box integration with [UI libraries](https://codesandbox.io/s/react-hook-form-v7-controller-5h1q5)
-- [Small size](https://bundlephobia.com/result?p=react-hook-form@latest) and no [dependencies](./package.json)
-- Support [Yup](https://github.com/jquense/yup), [Zod](https://github.com/colinhacks/zod), [AJV](https://github.com/ajv-validator/ajv), [Superstruct](https://github.com/ianstormtaylor/superstruct), [Joi](https://github.com/hapijs/joi), [Vest](https://github.com/ealush/vest), [class-validator](https://github.com/typestack/class-validator), [io-ts](https://github.com/gcanti/io-ts), [nope](https://github.com/bvego/nope-validator) and custom build
+- [Small size](https://bundlephobia.com/result?p=react-hook-form@latest) and no [dependencies](../package.json)
+- Supports [Yup](https://github.com/jquense/yup), [Zod](https://github.com/colinhacks/zod), [AJV](https://github.com/ajv-validator/ajv), [Superstruct](https://github.com/ianstormtaylor/superstruct), [Joi](https://github.com/hapijs/joi), [Vest](https://github.com/ealush/vest), [class-validator](https://github.com/typestack/class-validator), [io-ts](https://github.com/gcanti/io-ts), [nope](https://github.com/bvego/nope-validator) and custom builds
 
 ### Install
 
@@ -56,7 +56,7 @@ function App() {
       <input {...register('lastName', { required: true })} />
       {errors.lastName && <p>Last name is required.</p>}
       <input {...register('age', { pattern: /\d+/ })} />
-      {errors.age && <p>Please enter number for age.</p>}
+      {errors.age && <p>Please enter a number for age.</p>}
       <input type="submit" />
     </form>
   );
@@ -83,7 +83,7 @@ Thanks go to all our backers! [[Become a backer](https://opencollective.com/reac
 
 ### Contributors
 
-Thanks go to these wonderful people! [[Become a contributor](CONTRIBUTING.md)].
+Thanks go to these wonderful people! [[Become a contributor](../CONTRIBUTING.md)].
 
 <a href="https://github.com/react-hook-form/react-hook-form/graphs/contributors">
   <img src="https://opencollective.com/react-hook-form/contributors.svg?width=890&button=false" />

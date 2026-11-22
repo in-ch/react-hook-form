@@ -1,10 +1,11 @@
 import React from 'react';
 
-import { DEFAULT_FORM_STATE } from './logic/createFormControl';
+import { DEFAULT_FORM_STATE, defaultOptions } from './logic/createFormControl';
 import getProxyFormState from './logic/getProxyFormState';
 import cloneObject from './utils/cloneObject';
 import deepEqual from './utils/deepEqual';
 import isFunction from './utils/isFunction';
+import { FORM_ERROR_TYPE } from './constants';
 import { createFormControl } from './logic';
 import type {
   FieldValues,
@@ -13,34 +14,35 @@ import type {
   UseFormReturn,
 } from './types';
 import { useIsomorphicLayoutEffect } from './useIsomorphicLayoutEffect';
+import { cloneFormState, useResyncOnReconnect } from './useResyncOnReconnect';
+
+const RESET_OPTIONS = {
+  mode: defaultOptions.mode,
+  reValidateMode: defaultOptions.reValidateMode,
+  shouldFocusError: defaultOptions.shouldFocusError,
+  resolver: undefined,
+  criteriaMode: undefined,
+  delayError: undefined,
+  shouldUnregister: undefined,
+  shouldUseNativeValidation: undefined,
+  context: undefined,
+  progressive: undefined,
+  resetOptions: undefined,
+  validate: undefined,
+} as const;
 
 /**
- * Custom hook to manage the entire form.
+ * Core hook for managing a form. Returns all methods and state for
+ * registration, validation, and submission.
  *
- * @remarks
- * [API](https://react-hook-form.com/docs/useform) • [Demo](https://codesandbox.io/s/react-hook-form-get-started-ts-5ksmm) • [Video](https://www.youtube.com/watch?v=RkXv4AXXC_4)
- *
- * @param props - form configuration and validation parameters.
- *
- * @returns methods - individual functions to manage the form state. {@link UseFormReturn}
+ * @see [API](https://react-hook-form.com/docs/useform)
  *
  * @example
  * ```tsx
- * function App() {
- *   const { register, handleSubmit, watch, formState: { errors } } = useForm();
- *   const onSubmit = data => console.log(data);
- *
- *   console.log(watch("example"));
- *
- *   return (
- *     <form onSubmit={handleSubmit(onSubmit)}>
- *       <input defaultValue="test" {...register("example")} />
- *       <input {...register("exampleRequired", { required: true })} />
- *       {errors.exampleRequired && <span>This field is required</span>}
- *       <button>Submit</button>
- *     </form>
- *   );
- * }
+ * const { register, handleSubmit, formState: { errors } } = useForm<FormValues>();
+ * <form onSubmit={handleSubmit(onSubmit)}>
+ *   <input {...register("email", { required: true })} />
+ * </form>
  * ```
  */
 export function useForm<
@@ -54,6 +56,12 @@ export function useForm<
     UseFormReturn<TFieldValues, TContext, TTransformedValues> | undefined
   >(undefined);
   const _values = React.useRef<typeof props.values>(undefined);
+  const _formControlProp = React.useRef(props.formControl);
+  const _previousProps = React.useRef(props);
+  const _hadDisabled = React.useRef(false);
+  const _hadValidate = React.useRef(!!props.validate);
+  const _hadErrors = React.useRef(!!props.errors);
+  const _isMounted = React.useRef(false);
   const [formState, updateFormState] = React.useState<FormState<TFieldValues>>(
     () => ({
       ...cloneObject(DEFAULT_FORM_STATE),
@@ -66,7 +74,13 @@ export function useForm<
     }),
   );
 
-  if (!_formControl.current) {
+  if (
+    !_formControl.current ||
+    (props.formControl && _formControlProp.current !== props.formControl)
+  ) {
+    _formControlProp.current = props.formControl;
+    _previousProps.current = props;
+    _hadDisabled.current = false;
     if (props.formControl) {
       _formControl.current = {
         ...props.formControl,
@@ -87,10 +101,39 @@ export function useForm<
   }
 
   const control = _formControl.current.control;
-  control._options = props;
+
+  const removedOptions: Record<string, unknown> = {};
+
+  for (const key in RESET_OPTIONS) {
+    if (key in _previousProps.current && !(key in props)) {
+      removedOptions[key] = RESET_OPTIONS[key as keyof typeof RESET_OPTIONS];
+    }
+  }
+
+  if (_hadDisabled.current && !props.disabled) {
+    removedOptions.disabled = false;
+  }
+
+  control._options = {
+    ...removedOptions,
+    ...props,
+  };
+  _previousProps.current = props;
+
+  const getCurrentFormState = () => ({
+    ...control._formState,
+    defaultValues:
+      control._defaultValues as FormState<TFieldValues>['defaultValues'],
+  });
+
+  const { resyncIfNeeded, snapshot } = useResyncOnReconnect<
+    FormState<TFieldValues>
+  >(getCurrentFormState, cloneFormState);
 
   useIsomorphicLayoutEffect(() => {
-    const sub = control._subscribe({
+    resyncIfNeeded(true, getCurrentFormState, updateFormState);
+
+    const unsubscribe = control._subscribe({
       formState: control._proxyFormState,
       callback: () =>
         updateFormState({
@@ -107,14 +150,20 @@ export function useForm<
     }));
 
     control._formState.isReady = true;
+    control._subjects.state.next({ isReady: true });
 
-    return sub;
-  }, [control]);
+    return () => {
+      unsubscribe();
+      snapshot(true, getCurrentFormState);
+    };
+  }, [control, resyncIfNeeded, snapshot]);
 
-  React.useEffect(
-    () => control._disableForm(props.disabled),
-    [control, props.disabled],
-  );
+  React.useEffect(() => {
+    control._disableForm(
+      _hadDisabled.current && !props.disabled ? false : props.disabled,
+    );
+    _hadDisabled.current = !!props.disabled;
+  }, [control, props.disabled]);
 
   React.useEffect(() => {
     if (props.mode) {
@@ -129,8 +178,18 @@ export function useForm<
     if (props.errors) {
       control._setErrors(props.errors);
       control._focusError();
+    } else if (_hadErrors.current) {
+      control._setErrors({});
     }
+    _hadErrors.current = !!props.errors;
   }, [control, props.errors]);
+
+  React.useEffect(() => {
+    if (_hadValidate.current && !props.validate) {
+      _formControl.current && _formControl.current.clearErrors(FORM_ERROR_TYPE);
+    }
+    _hadValidate.current = !!props.validate;
+  }, [props.validate]);
 
   React.useEffect(() => {
     props.shouldUnregister &&
@@ -156,7 +215,12 @@ export function useForm<
         keepFieldsRef: true,
         ...control._options.resetOptions,
       });
-      if (!control._options.resetOptions?.keepIsValid) {
+      if (
+        !(
+          control._options.resetOptions &&
+          control._options.resetOptions.keepIsValid
+        )
+      ) {
         control._setValid();
       }
       _values.current = props.values;
@@ -167,10 +231,11 @@ export function useForm<
   }, [control, props.values]);
 
   React.useEffect(() => {
-    if (!control._state.mount) {
+    if (!control._state.mount || (!_isMounted.current && !props.values)) {
       control._setValid();
       control._state.mount = true;
     }
+    _isMounted.current = true;
 
     if (control._state.watch) {
       control._state.watch = false;

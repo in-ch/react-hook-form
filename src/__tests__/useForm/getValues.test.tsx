@@ -1,5 +1,6 @@
 import React from 'react';
 import {
+  act,
   fireEvent,
   render,
   renderHook,
@@ -8,12 +9,13 @@ import {
 } from '@testing-library/react';
 
 import { Controller } from '../../controller';
+import { useFieldArray } from '../../useFieldArray';
 import { useForm } from '../../useForm';
 import { FormProvider, useFormContext } from '../../useFormContext';
 import { useFormState } from '../../useFormState';
 
 describe('getValues', () => {
-  it('should return defaultValues before inputs mounted', () => {
+  it('return defaultValues before inputs mounted', () => {
     let values;
 
     const Component = () => {
@@ -41,14 +43,14 @@ describe('getValues', () => {
     });
   });
 
-  it('should call getFieldsValues and return all values', () => {
+  it('call getFieldsValues and return all values', () => {
     const { result } = renderHook(() => useForm<{ test: string }>());
     result.current.register('test');
     result.current.setValue('test', 'test');
     expect(result.current.getValues()).toEqual({ test: 'test' });
   });
 
-  it('should get individual field value', () => {
+  it('get individual field value', () => {
     const { result } = renderHook(() =>
       useForm<{ test: string }>({
         defaultValues: {
@@ -60,7 +62,7 @@ describe('getValues', () => {
     expect(result.current.getValues('test')).toEqual('123');
   });
 
-  it('should get all field values', () => {
+  it('get all field values', () => {
     const values = {
       test: 'test',
       test1: 'test1',
@@ -86,13 +88,83 @@ describe('getValues', () => {
     ]);
   });
 
-  it('should get undefined when field not found', () => {
+  it('get undefined when field not found', () => {
     const { result } = renderHook(() => useForm());
 
     expect(result.current.getValues('test')).toEqual(undefined);
   });
 
-  it('should get value from shallowFieldsStateRef by name', () => {
+  it('return fresh containers while preserving nested value references', () => {
+    const { result } = renderHook(() =>
+      useForm({
+        defaultValues: {
+          field: 'value',
+          user: { name: 'test' },
+          items: [{ value: 1 }],
+        },
+      }),
+    );
+    const { getValues } = result.current;
+    const snapshot = getValues();
+    const names = ['user', 'items'] as const;
+    const selected = getValues(names);
+
+    expect(snapshot).not.toBe(getValues());
+    expect(snapshot.user).toBe(getValues('user'));
+    expect(snapshot.items).toBe(getValues('items'));
+    expect(selected).not.toBe(getValues(names));
+    expect(selected[0]).toBe(snapshot.user);
+    expect(selected[1]).toBe(snapshot.items);
+
+    snapshot.field = 'changed outside the form';
+
+    expect(getValues('field')).toBe('value');
+  });
+
+  it.each([
+    { filter: 'dirtyFields', config: { dirtyFields: true } },
+    { filter: 'touchedFields', config: { touchedFields: true } },
+  ] as const)(
+    'preserve form values when filtering with $filter',
+    ({ config }) => {
+      const { result } = renderHook(() =>
+        useForm({
+          defaultValues: {
+            user: { name: 'test', note: 'unchanged' },
+            items: [{ value: 1 }, { value: 2 }],
+          },
+        }),
+      );
+
+      act(() => {
+        result.current.setValue('user.name', 'changed', {
+          shouldDirty: true,
+          shouldTouch: true,
+        });
+        result.current.setValue('items.1.value', 3, {
+          shouldDirty: true,
+          shouldTouch: true,
+        });
+      });
+
+      const filtered = result.current.getValues(undefined, config);
+
+      expect(filtered).toEqual({
+        user: { name: 'changed' },
+        items: [undefined, { value: 3 }],
+      });
+
+      filtered.user.name = 'changed outside the form';
+      filtered.items[1].value = 4;
+
+      expect(result.current.getValues()).toEqual({
+        user: { name: 'changed', note: 'unchanged' },
+        items: [{ value: 1 }, { value: 3 }],
+      });
+    },
+  );
+
+  it('get value from shallowFieldsStateRef by name', () => {
     const { result, unmount } = renderHook(() =>
       useForm<{
         test: string;
@@ -107,7 +179,7 @@ describe('getValues', () => {
     expect(result.current.getValues('test')).toEqual('test');
   });
 
-  it('should get value from shallowFieldsStateRef by array', () => {
+  it('get value from shallowFieldsStateRef by array', () => {
     const { result, unmount } = renderHook(() =>
       useForm<{
         test: string;
@@ -122,7 +194,7 @@ describe('getValues', () => {
     expect(result.current.getValues(['test'])).toEqual(['test']);
   });
 
-  it('should get value from shallowFieldsStateRef', () => {
+  it('get value from shallowFieldsStateRef', () => {
     const { result, unmount } = renderHook(() =>
       useForm<{
         test: string;
@@ -139,7 +211,7 @@ describe('getValues', () => {
     });
   });
 
-  it('should get value from default value by name when field is not registered', () => {
+  it('get value from default value by name when field is not registered', () => {
     const { result } = renderHook(() =>
       useForm({
         defaultValues: {
@@ -151,7 +223,7 @@ describe('getValues', () => {
     expect(result.current.getValues('test')).toEqual('default');
   });
 
-  it('should get value from default value by array when field is not registered', () => {
+  it('get value from default value by array when field is not registered', () => {
     const { result } = renderHook(() =>
       useForm({
         defaultValues: {
@@ -163,7 +235,7 @@ describe('getValues', () => {
     expect(result.current.getValues(['test'])).toEqual(['default']);
   });
 
-  it('should not get value from default value when field is not registered', () => {
+  it('not get value from default value when field is not registered', () => {
     const { result } = renderHook(() =>
       useForm({
         defaultValues: {
@@ -177,7 +249,7 @@ describe('getValues', () => {
     });
   });
 
-  it('should return defaultValues when inputs are not registered', () => {
+  it('return defaultValues when inputs are not registered', () => {
     let data: unknown;
 
     const Component = () => {
@@ -199,7 +271,7 @@ describe('getValues', () => {
     expect(data).toEqual({ test: 'test' });
   });
 
-  it('should return defaultValues deep merge with form values', async () => {
+  it('return defaultValues deep merge with form values', async () => {
     let data: unknown;
 
     const Component = () => {
@@ -259,7 +331,7 @@ describe('getValues', () => {
     });
   });
 
-  it('should return mounted input value after async reset', async () => {
+  it('return mounted input value after async reset', async () => {
     let updatedValue: unknown;
 
     type FormValues = {
@@ -341,5 +413,74 @@ describe('getValues', () => {
     });
 
     expect(screen.getByRole('button', { name: 'submit' })).not.toBeDisabled();
+  });
+
+  it('only return the dirty entries of a field array', () => {
+    let dirtyValues: unknown;
+
+    const App = () => {
+      const {
+        register,
+        control,
+        getValues,
+        formState: { dirtyFields },
+      } = useForm({
+        defaultValues: {
+          records: [
+            { name: 'test', note: 'note' },
+            { name: 'test1', note: 'note1' },
+          ],
+        },
+      });
+      const { fields } = useFieldArray({ control, name: 'records' });
+
+      return (
+        <form>
+          {fields.map((field, index) => (
+            <input key={field.id} {...register(`records.${index}.name`)} />
+          ))}
+          <p>{JSON.stringify(dirtyFields)}</p>
+          <button
+            type={'button'}
+            onClick={() => {
+              dirtyValues = getValues(undefined, { dirtyFields: true });
+            }}
+          >
+            getValues
+          </button>
+        </form>
+      );
+    };
+
+    render(<App />);
+
+    fireEvent.change(screen.getAllByRole('textbox')[1], {
+      target: { value: 'changed' },
+    });
+
+    fireEvent.click(screen.getByRole('button'));
+
+    expect(dirtyValues).toEqual({
+      records: [undefined, { name: 'changed' }],
+    });
+  });
+});
+
+describe('getValues with an own hasOwnProperty field', () => {
+  it('extracts dirty values without calling the field value', () => {
+    const { result } = renderHook(() => {
+      const methods = useForm({ defaultValues: { hasOwnProperty: 'before' } });
+      methods.formState.dirtyFields;
+      return methods;
+    });
+    result.current.register('hasOwnProperty');
+    act(() => {
+      result.current.setValue('hasOwnProperty', 'after', {
+        shouldDirty: true,
+      });
+    });
+    expect(result.current.getValues(undefined, { dirtyFields: true })).toEqual({
+      hasOwnProperty: 'after',
+    });
   });
 });

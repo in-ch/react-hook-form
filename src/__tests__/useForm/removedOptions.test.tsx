@@ -1,0 +1,409 @@
+import React from 'react';
+import {
+  act,
+  fireEvent,
+  render,
+  screen,
+  waitFor,
+} from '@testing-library/react';
+
+import { Controller } from '../../controller';
+import { createFormControl } from '../../logic/createFormControl';
+import type { FieldErrors, UseFormProps } from '../../types';
+import { useForm } from '../../useForm';
+
+describe('useForm options removed on re-render', () => {
+  it('should stop using a resolver that is no longer passed', async () => {
+    const resolver = jest.fn(async () => ({
+      values: {},
+      errors: { test: { type: 'custom', message: 'from resolver' } },
+    }));
+    const onSubmit = jest.fn();
+    let setUseResolver: (value: boolean) => void = () => {};
+
+    const App = () => {
+      const [useResolver, setState] = React.useState(true);
+      setUseResolver = setState;
+      const { register, handleSubmit } = useForm<{ test: string }>(
+        useResolver ? { resolver: resolver as never } : {},
+      );
+
+      return (
+        <form onSubmit={handleSubmit(onSubmit)}>
+          <input {...register('test')} />
+          <button>submit</button>
+        </form>
+      );
+    };
+
+    render(<App />);
+
+    act(() => setUseResolver(false));
+
+    fireEvent.click(screen.getByRole('button'));
+
+    await waitFor(() => expect(onSubmit).toHaveBeenCalledTimes(1));
+    expect(resolver).not.toHaveBeenCalled();
+  });
+
+  it('should go back to the default mode when mode is no longer passed', async () => {
+    const validate = jest.fn((value: string) => (value ? true : 'required'));
+    let setUseMode: (value: boolean) => void = () => {};
+
+    const App = () => {
+      const [useMode, setState] = React.useState(true);
+      setUseMode = setState;
+      const { register } = useForm<{ test: string }>(
+        useMode ? { mode: 'onChange' } : {},
+      );
+
+      return <input {...register('test', { validate })} />;
+    };
+
+    render(<App />);
+
+    fireEvent.change(screen.getByRole('textbox'), { target: { value: 'a' } });
+
+    await waitFor(() => expect(validate).toHaveBeenCalledTimes(1));
+
+    act(() => setUseMode(false));
+
+    validate.mockClear();
+
+    fireEvent.change(screen.getByRole('textbox'), { target: { value: 'ab' } });
+
+    await act(async () => {
+      await new Promise((resolve) => setTimeout(resolve, 20));
+    });
+
+    expect(validate).not.toHaveBeenCalled();
+  });
+
+  it('should stop emitting progressive enhancement attributes when progressive is no longer passed', () => {
+    let setUseProgressive: (value: boolean) => void = () => {};
+
+    const App = () => {
+      const [useProgressive, setState] = React.useState(true);
+      setUseProgressive = setState;
+      const { register } = useForm<{ test: string }>(
+        useProgressive ? { progressive: true } : {},
+      );
+
+      return (
+        <input
+          {...register('test', {
+            required: true,
+          })}
+        />
+      );
+    };
+
+    render(<App />);
+
+    expect(screen.getByRole('textbox')).toBeRequired();
+
+    act(() => setUseProgressive(false));
+
+    expect(screen.getByRole('textbox')).not.toBeRequired();
+  });
+
+  it('should re-enable the form when disabled is no longer passed', async () => {
+    const onSubmit = jest.fn();
+    let setUseDisabled: (value: boolean) => void = () => {};
+
+    const App = () => {
+      const [useDisabled, setState] = React.useState(true);
+      setUseDisabled = setState;
+      const { register, control, handleSubmit, formState } = useForm<{
+        native: string;
+        controlled: string;
+      }>({
+        defaultValues: { native: 'a', controlled: 'b' },
+        ...(useDisabled ? { disabled: true } : {}),
+      });
+
+      return (
+        <form onSubmit={handleSubmit(onSubmit)}>
+          <input aria-label="native" {...register('native')} />
+          <Controller
+            control={control}
+            name="controlled"
+            render={({ field }) => <input aria-label="controlled" {...field} />}
+          />
+          <p>{formState.disabled ? 'disabled' : 'enabled'}</p>
+          <button>submit</button>
+        </form>
+      );
+    };
+
+    render(<App />);
+
+    expect(screen.getByRole('textbox', { name: 'native' })).toBeDisabled();
+    expect(screen.getByRole('textbox', { name: 'controlled' })).toBeDisabled();
+
+    act(() => setUseDisabled(false));
+
+    expect(screen.getByRole('textbox', { name: 'native' })).toBeEnabled();
+    expect(screen.getByRole('textbox', { name: 'controlled' })).toBeEnabled();
+    expect(screen.getByText('enabled')).toBeVisible();
+
+    fireEvent.click(screen.getByRole('button'));
+
+    await waitFor(() =>
+      expect(onSubmit).toHaveBeenCalledWith(
+        { native: 'a', controlled: 'b' },
+        expect.anything(),
+      ),
+    );
+  });
+
+  it('should keep a field disabled by its own option when disabled is no longer passed', () => {
+    let setUseDisabled: (value: boolean) => void = () => {};
+
+    const App = () => {
+      const [useDisabled, setState] = React.useState(true);
+      setUseDisabled = setState;
+      const { register } = useForm<{ locked: string; open: string }>(
+        useDisabled ? { disabled: true } : {},
+      );
+
+      return (
+        <>
+          <input
+            aria-label="locked"
+            {...register('locked', { disabled: true })}
+          />
+          <input aria-label="open" {...register('open')} />
+        </>
+      );
+    };
+
+    render(<App />);
+
+    act(() => setUseDisabled(false));
+
+    expect(screen.getByRole('textbox', { name: 'locked' })).toBeDisabled();
+    expect(screen.getByRole('textbox', { name: 'open' })).toBeEnabled();
+  });
+
+  it('should not re-enable a formControl created with disabled on re-render', () => {
+    const { formControl } = createFormControl<{ test: string }>({
+      disabled: true,
+    });
+
+    const App = () => {
+      const { register } = useForm({ formControl });
+
+      return <input aria-label="test" {...register('test')} />;
+    };
+
+    const { rerender } = render(<App />);
+
+    rerender(<App />);
+
+    expect(screen.getByRole('textbox', { name: 'test' })).toBeDisabled();
+  });
+
+  it('should keep the mode and resolver a formControl was created with', async () => {
+    const resolver = jest.fn(async () => ({
+      values: {},
+      errors: { test: { type: 'custom', message: 'from resolver' } },
+    }));
+    const { formControl } = createFormControl<{ test: string }>({
+      mode: 'onChange',
+      resolver: resolver as never,
+    });
+
+    const App = () => {
+      const {
+        register,
+        formState: { errors },
+      } = useForm({ formControl });
+
+      return (
+        <>
+          <input {...register('test')} />
+          {errors.test && <p role="alert">{errors.test.message}</p>}
+        </>
+      );
+    };
+
+    render(<App />);
+
+    fireEvent.change(screen.getByRole('textbox'), { target: { value: 'a' } });
+
+    expect(await screen.findByRole('alert')).toHaveTextContent('from resolver');
+  });
+
+  it('should keep the form level validate a formControl was created with', async () => {
+    const onSubmit = jest.fn();
+    const { formControl } = createFormControl<{ test: string }>({
+      validate: () => 'form is invalid',
+    });
+
+    const App = () => {
+      const {
+        register,
+        handleSubmit,
+        formState: { errors },
+      } = useForm({ formControl });
+
+      return (
+        <form onSubmit={handleSubmit(onSubmit)}>
+          <input {...register('test')} />
+          {errors.form && <p role="alert">{errors.form.message}</p>}
+          <button>submit</button>
+        </form>
+      );
+    };
+
+    render(<App />);
+
+    fireEvent.click(screen.getByRole('button'));
+
+    expect(await screen.findByRole('alert')).toHaveTextContent(
+      'form is invalid',
+    );
+    expect(onSubmit).not.toHaveBeenCalled();
+  });
+
+  describe('when switching formControl', () => {
+    type Props = Pick<UseFormProps<{ test: string }>, 'formControl'> & {
+      disabled?: boolean;
+    };
+
+    const App = ({ formControl, disabled }: Props) => {
+      const { register } = useForm({
+        formControl,
+        ...(disabled ? { disabled } : {}),
+      });
+
+      return <input aria-label="test" {...register('test')} />;
+    };
+
+    it('should not re-enable a disabled formControl when disabled is no longer passed', () => {
+      const first = createFormControl<{ test: string }>().formControl;
+      const second = createFormControl<{ test: string }>({
+        disabled: true,
+      }).formControl;
+
+      const { rerender } = render(<App formControl={first} disabled />);
+
+      rerender(<App formControl={second} />);
+
+      expect(screen.getByRole('textbox', { name: 'test' })).toBeDisabled();
+    });
+
+    it('should re-enable the new formControl when disabled is removed after the switch', () => {
+      const first = createFormControl<{ test: string }>().formControl;
+      const second = createFormControl<{ test: string }>().formControl;
+
+      const { rerender } = render(<App formControl={first} disabled />);
+
+      rerender(<App formControl={second} disabled />);
+
+      expect(screen.getByRole('textbox', { name: 'test' })).toBeDisabled();
+
+      rerender(<App formControl={second} />);
+
+      expect(screen.getByRole('textbox', { name: 'test' })).toBeEnabled();
+    });
+
+    it('should keep the mode of the new formControl when the previous props passed a mode', async () => {
+      const validate = jest.fn(() => true);
+      const first = createFormControl<{ test: string }>().formControl;
+      const second = createFormControl<{ test: string }>({
+        mode: 'onChange',
+      }).formControl;
+
+      const ModeApp = ({
+        formControl,
+        mode,
+      }: Pick<UseFormProps<{ test: string }>, 'formControl' | 'mode'>) => {
+        const { register } = useForm({
+          formControl,
+          ...(mode ? { mode } : {}),
+        });
+
+        return <input {...register('test', { validate })} />;
+      };
+
+      const { rerender } = render(
+        <ModeApp formControl={first} mode="onBlur" />,
+      );
+
+      rerender(<ModeApp formControl={second} />);
+
+      fireEvent.change(screen.getByRole('textbox'), {
+        target: { value: 'a' },
+      });
+
+      await waitFor(() => expect(validate).toHaveBeenCalledTimes(1));
+    });
+  });
+
+  it('should clear errors when errors option is no longer passed', () => {
+    let setErrors: (errors?: FieldErrors<{ test: string }>) => void = () => {};
+
+    const App = () => {
+      const [errors, setState] = React.useState<
+        FieldErrors<{ test: string }> | undefined
+      >({
+        test: { type: 'server', message: 'server error' },
+      });
+      setErrors = setState;
+      const {
+        register,
+        formState: { errors: formErrors },
+      } = useForm<{ test: string }>({
+        ...(errors ? { errors } : {}),
+      });
+
+      return (
+        <div>
+          <input {...register('test')} />
+          {formErrors.test && <p role="alert">{formErrors.test.message}</p>}
+        </div>
+      );
+    };
+
+    render(<App />);
+
+    expect(screen.getByRole('alert')).toHaveTextContent('server error');
+
+    act(() => setErrors(undefined));
+
+    expect(screen.queryByRole('alert')).not.toBeInTheDocument();
+  });
+  it('should reset resetOptions when resetOptions option is no longer passed', () => {
+    let updateForm: (
+      newProps: UseFormProps<{ test: string }>,
+    ) => void = () => {};
+
+    const App = () => {
+      const [props, setProps] = React.useState<UseFormProps<{ test: string }>>({
+        values: { test: 'initial' },
+        resetOptions: { keepDirtyValues: true },
+      });
+      updateForm = setProps;
+
+      const { register } = useForm<{ test: string }>(props);
+
+      return <input {...register('test')} />;
+    };
+
+    render(<App />);
+
+    const input = screen.getByRole('textbox') as HTMLInputElement;
+    expect(input.value).toBe('initial');
+
+    fireEvent.change(input, { target: { value: 'dirty' } });
+    expect(input.value).toBe('dirty');
+
+    act(() => {
+      updateForm({ values: { test: 'updated' } });
+    });
+
+    expect(input.value).toBe('updated');
+  });
+});

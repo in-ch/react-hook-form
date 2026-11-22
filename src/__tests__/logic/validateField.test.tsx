@@ -6,7 +6,24 @@ jest.mock('../../logic/getRadioValue');
 jest.mock('../../logic/getCheckboxValue');
 
 describe('validateField', () => {
-  it('should return required true when input not filled with required', async () => {
+  it.each(['x', ['x']])(
+    'enforces a numeric zero maxLength for %p',
+    async (value) => {
+      const ref = { type: 'text', name: 'test' };
+      expect(
+        await validateField(
+          { _f: { mount: true, name: 'test', ref, maxLength: 0 } },
+          new Set(),
+          { test: value },
+          false,
+          false,
+          Array.isArray(value),
+        ),
+      ).toEqual({ test: { ref, message: '', type: 'maxLength' } });
+    },
+  );
+
+  it('return required true when input not filled with required', async () => {
     (getRadioValue as jest.Mock).mockImplementation(() => ({
       value: '2',
     }));
@@ -390,16 +407,7 @@ describe('validateField', () => {
         },
         false,
       ),
-    ).toEqual({
-      test: {
-        type: 'required',
-        message: '',
-        ref: {
-          name: 'test',
-          value: 'e',
-        },
-      },
-    });
+    ).toEqual({});
 
     expect(
       await validateField(
@@ -431,7 +439,7 @@ describe('validateField', () => {
     });
   });
 
-  it('should return max error', async () => {
+  it('return max error', async () => {
     expect(
       await validateField(
         {
@@ -774,7 +782,7 @@ describe('validateField', () => {
     });
   });
 
-  it('should return min error', async () => {
+  it('return min error', async () => {
     expect(
       await validateField(
         {
@@ -1062,7 +1070,81 @@ describe('validateField', () => {
     });
   });
 
-  it('should return min and max error for custom input', async () => {
+  it('return min error when the field value is already a Date object (valueAsDate)', async () => {
+    expect(
+      await validateField(
+        {
+          _f: {
+            mount: true,
+            name: 'test',
+            ref: {
+              type: 'date',
+              name: 'test',
+            },
+            value: new Date('2019-2-12'),
+            valueAsDate: true,
+            required: true,
+            min: {
+              value: '2019-3-12',
+              message: 'min',
+            },
+          },
+        },
+        new Set(),
+        {
+          test: new Date('2019-2-12'),
+        },
+        false,
+      ),
+    ).toEqual({
+      test: {
+        type: 'min',
+        message: 'min',
+        ref: {
+          type: 'date',
+          name: 'test',
+        },
+      },
+    });
+
+    expect(
+      await validateField(
+        {
+          _f: {
+            mount: true,
+            name: 'test',
+            ref: {
+              type: 'date',
+              name: 'test',
+            },
+            value: new Date('2025-1-1'),
+            valueAsDate: true,
+            required: true,
+            max: {
+              value: '2010-1-1',
+              message: 'max',
+            },
+          },
+        },
+        new Set(),
+        {
+          test: new Date('2025-1-1'),
+        },
+        false,
+      ),
+    ).toEqual({
+      test: {
+        type: 'max',
+        message: 'max',
+        ref: {
+          type: 'date',
+          name: 'test',
+        },
+      },
+    });
+  });
+
+  it('return min and max error for custom input', async () => {
     expect(
       await validateField(
         {
@@ -1150,7 +1232,7 @@ describe('validateField', () => {
     });
   });
 
-  it('should return max length error ', async () => {
+  it('return max length error ', async () => {
     expect(
       await validateField(
         {
@@ -1254,7 +1336,7 @@ describe('validateField', () => {
     });
   });
 
-  it('should return min length error ', async () => {
+  it('return min length error ', async () => {
     expect(
       await validateField(
         {
@@ -1358,7 +1440,7 @@ describe('validateField', () => {
     });
   });
 
-  it('should return pattern error when not matching', async () => {
+  it('return pattern error when not matching', async () => {
     const emailRegex =
       /(?:[a-z0-9!#$%&'*+/=?^_`{|}~-]+(?:\.[a-z0-9!#$%&'*+/=?^_`{|}~-]+)*|"(?:[\x01-\x08\x0b\x0c\x0e-\x1f\x21\x23-\x5b\x5d-\x7f]|\\[\x01-\x09\x0b\x0c\x0e-\x7f])*")@(?:(?:[a-z0-9](?:[a-z0-9-]*[a-z0-9])?\.)+[a-z0-9](?:[a-z0-9-]*[a-z0-9])?|\[(?:(?:25[0-5]|2[0-4][0-9]|[01]?[0-9][0-9]?)\.){3}(?:25[0-5]|2[0-4][0-9]|[01]?[0-9][0-9]?|[a-z0-9-]*[a-z0-9]:(?:[\x01-\x08\x0b\x0c\x0e-\x1f\x21-\x5a\x53-\x7f]|\\[\x01-\x09\x0b\x0c\x0e-\x7f])+)\])/;
 
@@ -1511,7 +1593,7 @@ describe('validateField', () => {
     ).toEqual({});
   });
 
-  it('should validate for custom validation', async () => {
+  it('validate for custom validation', async () => {
     expect(
       await validateField(
         {
@@ -1705,7 +1787,7 @@ describe('validateField', () => {
     ).toEqual({});
   });
 
-  it('should return error message when it is defined', async () => {
+  it('return error message when it is defined', async () => {
     expect(
       await validateField(
         {
@@ -1783,7 +1865,7 @@ describe('validateField', () => {
     });
   });
 
-  it('should return result or empty string when validate has error', async () => {
+  it('return result or empty string when validate has error', async () => {
     expect(
       await validateField(
         {
@@ -1871,7 +1953,38 @@ describe('validateField', () => {
     ).toEqual({});
   });
 
-  it('should do nothing when validate is not an object nor function', async () => {
+  it('should not return an error when validate returns an empty message array', async () => {
+    const field = {
+      _f: {
+        mount: true,
+        name: 'test',
+        ref: { type: 'text', name: 'test' },
+        validate: {
+          rules: (value: string) =>
+            [
+              value.length < 3 && 'too short',
+              !/\d/.test(value) && 'no digit',
+            ].filter((message): message is string => !!message),
+        },
+      },
+    };
+
+    expect(
+      await validateField(field, new Set(), { test: 'abc1' }, false),
+    ).toEqual({});
+
+    expect(
+      await validateField(field, new Set(), { test: 'ab' }, false),
+    ).toEqual({
+      test: {
+        type: 'rules',
+        message: '',
+        ref: { type: 'text', name: 'test' },
+      },
+    });
+  });
+
+  it('do nothing when validate is not an object nor function', async () => {
     expect(
       await validateField(
         {
@@ -1892,7 +2005,7 @@ describe('validateField', () => {
     ).toEqual({});
   });
 
-  it('should return all validation errors', async () => {
+  it('return all validation errors', async () => {
     (getRadioValue as jest.Mock).mockImplementation(() => ({
       value: '',
     }));
@@ -1969,7 +2082,7 @@ describe('validateField', () => {
     });
   });
 
-  it('should handle pattern with g flag', async () => {
+  it('handle pattern with g flag', async () => {
     const reusedRe = /a/g;
 
     (getRadioValue as jest.Mock).mockImplementation(() => ({
@@ -2046,7 +2159,7 @@ describe('validateField', () => {
     });
   });
 
-  it('should return all validation error messages', async () => {
+  it('return all validation error messages', async () => {
     (getRadioValue as jest.Mock).mockImplementation(() => ({
       value: '',
     }));
@@ -2195,7 +2308,7 @@ describe('validateField', () => {
   });
 
   describe('with Browser native validation', () => {
-    it('should invoke setCustomValidity for invalid input', () => {
+    it('invoke setCustomValidity for invalid input', () => {
       const setCustomValidity = jest.fn();
       const reportValidity = jest.fn();
 
@@ -2226,7 +2339,7 @@ describe('validateField', () => {
       expect(reportValidity).toHaveBeenCalled();
     });
 
-    it('should invoke setCustomValidity for invalid input with its message', () => {
+    it('invoke setCustomValidity for invalid input with its message', () => {
       const setCustomValidity = jest.fn();
       const reportValidity = jest.fn();
 
@@ -2257,7 +2370,7 @@ describe('validateField', () => {
       expect(reportValidity).toHaveBeenCalled();
     });
 
-    it('should invoke setCustomValidity with empty string for a valid input', () => {
+    it('invoke setCustomValidity with empty string for a valid input', () => {
       const setCustomValidity = jest.fn();
       const reportValidity = jest.fn();
 
@@ -2288,7 +2401,154 @@ describe('validateField', () => {
       expect(reportValidity).toHaveBeenCalled();
     });
 
-    it('should abort validation early when input is disabled', async () => {
+    it('invoke setCustomValidity on all refs for a required radio group', async () => {
+      (getRadioValue as jest.Mock).mockReturnValue({
+        isValid: false,
+        value: undefined,
+      });
+
+      const setCustomValidity1 = jest.fn();
+      const setCustomValidity2 = jest.fn();
+      const reportValidity = jest.fn();
+
+      const ref1 = {
+        setCustomValidity: setCustomValidity1,
+        reportValidity,
+        name: 'foo',
+        value: 'bar',
+        type: 'radio',
+      };
+      const ref2 = {
+        setCustomValidity: setCustomValidity2,
+        name: 'foo',
+        value: 'baz',
+        type: 'radio',
+      };
+
+      await validateField(
+        {
+          _f: {
+            name: 'foo',
+            ref: ref1 as any,
+            refs: [ref1, ref2] as any,
+            required: 'You missed that',
+            mount: true,
+          },
+        },
+        new Set(),
+        { foo: undefined },
+        false,
+        true,
+      );
+
+      expect(setCustomValidity1).toHaveBeenCalledWith('You missed that');
+      expect(setCustomValidity2).toHaveBeenCalledWith('You missed that');
+      expect(reportValidity).toHaveBeenCalledTimes(1);
+    });
+
+    it('clear setCustomValidity on all refs for a valid radio group', async () => {
+      (getRadioValue as jest.Mock).mockReturnValue({
+        isValid: true,
+        value: 'bar',
+      });
+
+      const setCustomValidity1 = jest.fn();
+      const setCustomValidity2 = jest.fn();
+      const reportValidity = jest.fn();
+
+      const ref1 = {
+        setCustomValidity: setCustomValidity1,
+        reportValidity,
+        name: 'foo',
+        value: 'bar',
+        type: 'radio',
+        checked: true,
+      };
+      const ref2 = {
+        setCustomValidity: setCustomValidity2,
+        name: 'foo',
+        value: 'baz',
+        type: 'radio',
+        checked: false,
+      };
+
+      await validateField(
+        {
+          _f: {
+            name: 'foo',
+            ref: ref1 as any,
+            refs: [ref1, ref2] as any,
+            required: 'You missed that',
+            mount: true,
+          },
+        },
+        new Set(),
+        { foo: 'bar' },
+        false,
+        true,
+      );
+
+      expect(setCustomValidity1).toHaveBeenCalledWith('');
+      expect(setCustomValidity2).toHaveBeenCalledWith('');
+      expect(reportValidity).toHaveBeenCalledTimes(1);
+    });
+
+    it('skip refs without setCustomValidity in a checkbox group', async () => {
+      (getCheckboxValue as jest.Mock).mockReturnValue({
+        isValid: false,
+        value: [],
+      });
+
+      const setCustomValidity1 = jest.fn();
+      const setCustomValidity2 = jest.fn();
+      const reportValidity = jest.fn();
+
+      const ref1 = {
+        setCustomValidity: setCustomValidity1,
+        reportValidity,
+        name: 'foo',
+        value: 'a',
+        type: 'checkbox',
+        checked: false,
+      };
+      const ref2 = {
+        setCustomValidity: setCustomValidity2,
+        name: 'foo',
+        value: 'b',
+        type: 'checkbox',
+        checked: false,
+      };
+
+      expect(
+        await validateField(
+          {
+            _f: {
+              name: 'foo',
+              ref: { type: 'checkbox', name: 'foo' },
+              refs: [ref1, ref2, {}] as any,
+              required: 'You missed that',
+              mount: true,
+            },
+          },
+          new Set(),
+          { foo: [] },
+          false,
+          true,
+        ),
+      ).toEqual({
+        foo: {
+          ref: ref1,
+          message: 'You missed that',
+          type: 'required',
+        },
+      });
+
+      expect(setCustomValidity1).toHaveBeenCalledWith('You missed that');
+      expect(setCustomValidity2).toHaveBeenCalledWith('You missed that');
+      expect(reportValidity).toHaveBeenCalledTimes(1);
+    });
+
+    it('abort validation early when input is disabled', async () => {
       expect(
         await validateField(
           {
@@ -2311,9 +2571,135 @@ describe('validateField', () => {
         ),
       ).toEqual({});
     });
+
+    it('invoke setCustomValidity with the required message when all criteria are collected', async () => {
+      const setCustomValidity = jest.fn();
+      const reportValidity = jest.fn();
+
+      await validateField(
+        {
+          _f: {
+            name: 'test',
+            ref: {
+              setCustomValidity,
+              reportValidity,
+              name: 'test',
+              value: '',
+            },
+            value: '',
+            required: 'something is wrong',
+            mount: true,
+          },
+        },
+        new Set(),
+        {
+          test: '',
+        },
+        true,
+        true,
+      );
+
+      expect(setCustomValidity).toHaveBeenLastCalledWith('something is wrong');
+      expect(reportValidity).toHaveBeenCalled();
+    });
+
+    it('invoke setCustomValidity with the validate message when all criteria are collected', async () => {
+      const setCustomValidity = jest.fn();
+      const reportValidity = jest.fn();
+
+      await validateField(
+        {
+          _f: {
+            name: 'test',
+            ref: {
+              setCustomValidity,
+              reportValidity,
+              name: 'test',
+              value: 'bill',
+            },
+            value: 'bill',
+            validate: () => 'this is not allowed',
+            mount: true,
+          },
+        },
+        new Set(),
+        {
+          test: 'bill',
+        },
+        true,
+        true,
+      );
+
+      expect(setCustomValidity).toHaveBeenLastCalledWith('this is not allowed');
+      expect(reportValidity).toHaveBeenCalled();
+    });
+
+    it('invoke setCustomValidity with an empty string for a valid input when all criteria are collected', async () => {
+      const setCustomValidity = jest.fn();
+      const reportValidity = jest.fn();
+
+      await validateField(
+        {
+          _f: {
+            name: 'test',
+            ref: {
+              setCustomValidity,
+              reportValidity,
+              name: 'test',
+              value: 'bill',
+            },
+            value: 'bill',
+            required: 'something is wrong',
+            mount: true,
+          },
+        },
+        new Set(),
+        {
+          test: 'bill',
+        },
+        true,
+        true,
+      );
+
+      expect(setCustomValidity).toHaveBeenLastCalledWith('');
+      expect(reportValidity).toHaveBeenCalled();
+    });
+
+    it('not invoke setCustomValidity per key when collecting all criteria from a validate object', async () => {
+      const setCustomValidity = jest.fn();
+      const reportValidity = jest.fn();
+
+      await validateField(
+        {
+          _f: {
+            mount: true,
+            name: 'test',
+            ref: {
+              name: 'test',
+              setCustomValidity,
+              reportValidity,
+            },
+            validate: {
+              a: () => 'error A',
+              b: () => 'error B',
+              c: () => 'error C',
+            },
+          },
+        },
+        new Set(),
+        {
+          test: 'value',
+        },
+        true,
+        true,
+      );
+
+      expect(setCustomValidity).toHaveBeenCalledTimes(1);
+      expect(reportValidity).toHaveBeenCalledTimes(1);
+    });
   });
 
-  it('should validate field array with required attribute', async () => {
+  it('validate field array with required attribute', async () => {
     expect(
       await validateField(
         {

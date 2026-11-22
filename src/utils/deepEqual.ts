@@ -1,11 +1,19 @@
 import isDateObject from './isDateObject';
 import isObject from './isObject';
+import isPlainObject from './isPlainObject';
 import isPrimitive from './isPrimitive';
 
+const isEmptyObjectWithCustomPrototype = (object: object, keys: string[]) =>
+  keys.length === 0 &&
+  !Array.isArray(object) &&
+  Object.getPrototypeOf(object) !== null &&
+  !isPlainObject(object);
+
 export default function deepEqual(
-  object1: any,
-  object2: any,
-  visited = new WeakSet(),
+  object1: unknown,
+  object2: unknown,
+  isErrorObject = false,
+  visited = new WeakMap<object, WeakSet<object>>(),
 ) {
   if (object1 === object2) {
     return true;
@@ -19,6 +27,14 @@ export default function deepEqual(
     return Object.is(object1.getTime(), object2.getTime());
   }
 
+  if (
+    Array.isArray(object1) &&
+    Array.isArray(object2) &&
+    object1.length !== object2.length
+  ) {
+    return false;
+  }
+
   const keys1 = Object.keys(object1);
   const keys2 = Object.keys(object2);
 
@@ -26,28 +42,46 @@ export default function deepEqual(
     return false;
   }
 
-  if (visited.has(object1) || visited.has(object2)) {
+  if (
+    isEmptyObjectWithCustomPrototype(object1, keys1) ||
+    isEmptyObjectWithCustomPrototype(object2, keys2)
+  ) {
+    return Object.is(object1, object2);
+  }
+
+  if (!keys1.length && Array.isArray(object1) !== Array.isArray(object2)) {
+    return false;
+  }
+
+  const visitedPairs = visited.get(object1);
+
+  if (visitedPairs && visitedPairs.has(object2)) {
     return true;
   }
 
-  visited.add(object1);
-  visited.add(object2);
+  if (visitedPairs) {
+    visitedPairs.add(object2);
+  } else {
+    const ws = new WeakSet();
+    ws.add(object2);
+    visited.set(object1, ws);
+  }
 
   for (const key of keys1) {
-    const val1 = object1[key];
+    const val1 = (object1 as Record<string, unknown>)[key];
 
-    if (!(key in object2)) {
+    if (!Object.prototype.hasOwnProperty.call(object2, key)) {
       return false;
     }
 
-    if (key !== 'ref') {
-      const val2 = object2[key];
+    if (!isErrorObject || key !== 'ref') {
+      const val2 = (object2 as Record<string, unknown>)[key];
 
       if (
         (isDateObject(val1) && isDateObject(val2)) ||
         ((isObject(val1) || Array.isArray(val1)) &&
           (isObject(val2) || Array.isArray(val2)))
-          ? !deepEqual(val1, val2, visited)
+          ? !deepEqual(val1, val2, isErrorObject, visited)
           : !Object.is(val1, val2)
       ) {
         return false;

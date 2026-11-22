@@ -10,15 +10,37 @@ import {
 
 import { VALIDATION_MODE } from '../../constants';
 import { Controller } from '../../controller';
-import type { Control, FormState, UseFormGetFieldState } from '../../types';
+import { createFormControl } from '../../logic/createFormControl';
+import type {
+  Control,
+  FormState,
+  Resolver,
+  ResolverResult,
+  UseFieldArrayReturn,
+  UseFormGetFieldState,
+  UseFormReturn,
+} from '../../types';
 import { useController } from '../../useController';
 import { useFieldArray } from '../../useFieldArray';
 import { useForm } from '../../useForm';
+import { useFormState } from '../../useFormState';
 import noop from '../../utils/noop';
 
+// Activity is a React 19.2+ API. Only run Activity-dependent tests when the
+// installed React actually provides it.
+const Activity = (React as unknown as { Activity?: unknown })
+  .Activity as React.ComponentType<{
+  mode: 'hidden' | 'visible';
+  children?: React.ReactNode;
+}>;
+const itWithActivity = Activity ? it : it.skip;
+
 describe('formState', () => {
+  afterEach(() => {
+    jest.useRealTimers();
+  });
   describe('isValid', () => {
-    it('should return isValid correctly with resolver', async () => {
+    it('return isValid correctly with resolver', async () => {
       let isValidValue = false;
 
       const Component = () => {
@@ -59,7 +81,7 @@ describe('formState', () => {
       await waitFor(() => expect(isValidValue).toBeTruthy());
     });
 
-    it('should return true for onBlur mode by default', async () => {
+    it('return true for onBlur mode by default', async () => {
       const App = () => {
         const {
           formState: { isValid },
@@ -75,7 +97,7 @@ describe('formState', () => {
       expect(await screen.findByText('valid')).toBeVisible();
     });
 
-    it('should return true for onChange mode by default', async () => {
+    it('return true for onChange mode by default', async () => {
       const App = () => {
         const {
           formState: { isValid },
@@ -91,7 +113,7 @@ describe('formState', () => {
       expect(await screen.findByText('valid')).toBeVisible();
     });
 
-    it('should return true for all mode by default', async () => {
+    it('return true for all mode by default', async () => {
       const App = () => {
         const {
           formState: { isValid },
@@ -107,7 +129,7 @@ describe('formState', () => {
       expect(await screen.findByText('valid')).toBeVisible();
     });
 
-    it('should return false when default value is not valid value', async () => {
+    it('return false when default value is not valid value', async () => {
       const { result } = renderHook(() => {
         const methods = useForm<{ input: string; issue: string }>({
           mode: VALIDATION_MODE.onChange,
@@ -126,7 +148,7 @@ describe('formState', () => {
       expect(result.current.formState.isValid).toBeFalsy();
     });
 
-    it('should return false when custom register with validation', async () => {
+    it('return false when custom register with validation', async () => {
       const { result } = renderHook(() =>
         useForm<{ input: string; issue: string }>({
           mode: VALIDATION_MODE.onChange,
@@ -142,7 +164,65 @@ describe('formState', () => {
       expect(result.current.formState.isValid).toBeFalsy();
     });
 
-    it('should update valid when toggle Controller', async () => {
+    it('stop checking validity at the first invalid field', async () => {
+      const validate = jest.fn(() => true);
+      const { result } = renderHook(() =>
+        useForm<{ first: string; second: string }>({
+          mode: VALIDATION_MODE.onChange,
+        }),
+      );
+
+      result.current.formState.isValid;
+
+      await act(async () => {
+        result.current.register('first', { required: true });
+        result.current.register('second', { validate });
+      });
+
+      expect(result.current.formState.isValid).toBeFalsy();
+      expect(validate).not.toHaveBeenCalled();
+    });
+
+    it('stop checking validity at the first invalid nested field', async () => {
+      const validate = jest.fn(() => true);
+      const { result } = renderHook(() =>
+        useForm<{ nested: { first: string }; second: string }>({
+          mode: VALIDATION_MODE.onChange,
+        }),
+      );
+
+      result.current.formState.isValid;
+
+      await act(async () => {
+        result.current.register('nested.first', { required: true });
+        result.current.register('second', { validate });
+      });
+
+      expect(result.current.formState.isValid).toBeFalsy();
+      expect(validate).not.toHaveBeenCalled();
+    });
+
+    it('keep checking validity after a valid nested field', async () => {
+      const validate = jest.fn(() => false);
+      const { result } = renderHook(() =>
+        useForm<{ nested: { first: string }; second: string }>({
+          mode: VALIDATION_MODE.onChange,
+          defaultValues: { nested: { first: 'value' }, second: '' },
+        }),
+      );
+
+      result.current.formState.isValid;
+
+      await act(async () => {
+        result.current.register('nested.first', { required: true });
+        result.current.register('second', { validate });
+      });
+
+      expect(result.current.formState.isValid).toBeFalsy();
+      expect(validate).toHaveBeenCalled();
+    });
+
+    it('update valid when toggle Controller', async () => {
       const App = () => {
         const {
           control,
@@ -227,7 +307,7 @@ describe('formState', () => {
       expect(await screen.findByText('invalid')).toBeVisible();
     });
 
-    it('should set isValid to true after async values provide valid data', async () => {
+    it('set isValid to true after async values provide valid data', async () => {
       jest.useFakeTimers();
 
       const App = () => {
@@ -261,29 +341,342 @@ describe('formState', () => {
 
       expect(screen.getByText('invalid')).toBeVisible();
 
-      act(() => {
+      await act(async () => {
         jest.advanceTimersByTime(2000);
       });
 
       await waitFor(() => expect(screen.getByText('valid')).toBeVisible());
       jest.useRealTimers();
     });
+
+    it('not let a stale whole-form validity check overwrite a newer one', async () => {
+      type FormValues = {
+        username: string;
+        bio: string;
+      };
+
+      const pending: Array<(valid: boolean) => void> = [];
+
+      const App = () => {
+        const {
+          register,
+          formState: { isValid },
+        } = useForm<FormValues>({
+          mode: 'onChange',
+        });
+
+        return (
+          <form>
+            <input
+              data-testid="username"
+              {...register('username', {
+                validate: () =>
+                  new Promise<boolean>((resolve) => {
+                    pending.push(resolve);
+                  }),
+              })}
+            />
+            <input data-testid="bio" {...register('bio')} />
+            <p>{isValid ? 'valid' : 'invalid'}</p>
+          </form>
+        );
+      };
+
+      render(<App />);
+
+      // mount starts the first (soon-to-be-stale) whole-form validity check,
+      // which is waiting on username's validate() to resolve
+      await waitFor(() => expect(pending.length).toBe(1));
+
+      // bio has no validation rules of its own, so this re-triggers another
+      // whole-form validity check while the mount-time one is still pending
+      fireEvent.change(screen.getByTestId('bio'), {
+        target: { value: 'hello' },
+      });
+
+      await waitFor(() => expect(pending.length).toBe(2));
+
+      // the newer check resolves first, correctly reporting the form valid
+      await act(async () => {
+        pending[1](true);
+      });
+      await waitFor(() => expect(screen.getByText('valid')).toBeVisible());
+
+      // the mount-time check was superseded, but its own validate() call
+      // was never told to stop; it resolves after and reports invalid.
+      // Flush with a real macrotask (not just act's microtask draining) so
+      // a stale commit has every chance to land before the final assertion.
+      await act(async () => {
+        pending[0](false);
+        await new Promise((resolve) => setTimeout(resolve, 0));
+      });
+
+      expect(screen.getByText('valid')).toBeVisible();
+    });
+
+    it('not let a stale resolver pass report isValidating as false while a newer one is pending', async () => {
+      type FormValues = {
+        username: string;
+      };
+
+      const pending: Array<() => void> = [];
+
+      const App = () => {
+        const {
+          register,
+          resetField,
+          formState: { isValid, isValidating },
+        } = useForm<FormValues>({
+          mode: 'onChange',
+          resolver: async () =>
+            new Promise((resolve) => {
+              pending.push(() => resolve({ values: {}, errors: {} }));
+            }),
+        });
+        void isValid;
+
+        return (
+          <div>
+            <input data-testid="username" {...register('username')} />
+            <button type="button" onClick={() => resetField('username')}>
+              reset
+            </button>
+            <p>{isValidating ? 'validating' : 'idle'}</p>
+          </div>
+        );
+      };
+
+      render(<App />);
+
+      // mount fires the first (soon-to-be-superseded) resolver pass, via
+      // _setValid's own resolver branch
+      await waitFor(() => expect(pending.length).toBe(1));
+      await waitFor(() => expect(screen.getByText('validating')).toBeVisible());
+
+      // resetField also calls _setValid directly (not onChange's separate
+      // resolver path), firing a second, overlapping pass
+      fireEvent.click(screen.getByText('reset'));
+      await waitFor(() => expect(pending.length).toBe(2));
+
+      // only the FIRST (now-superseded) pass resolves; the second, current
+      // pass is still in flight
+      await act(async () => {
+        pending[0]();
+      });
+
+      expect(screen.getByText('validating')).toBeVisible();
+    });
+
+    describe('when an older isValid check settles after a newer change', () => {
+      const setup = () => {
+        const checks: Array<{ value: string; resolve: () => void }> = [];
+
+        const validate = (value: string) =>
+          new Promise<true | string>((resolve) => {
+            checks.push({
+              value,
+              resolve: () => resolve(value.length > 2 || 'too short'),
+            });
+          });
+
+        const resolver = (values: { name: string }) =>
+          new Promise<ResolverResult<{ name: string }>>((resolve) => {
+            checks.push({
+              value: values.name,
+              resolve: () =>
+                resolve(
+                  values.name.length > 2
+                    ? { values, errors: {} }
+                    : {
+                        values: {},
+                        errors: {
+                          name: { type: 'validate', message: 'too short' },
+                        },
+                      },
+                ),
+            });
+          });
+
+        const settle = async (value: string) => {
+          const index = checks.findIndex((check) => check.value === value);
+
+          expect(index).toBeGreaterThan(-1);
+
+          await act(async () => {
+            checks.splice(index, 1)[0].resolve();
+          });
+        };
+
+        return { validate, resolver, settle };
+      };
+
+      const Form = ({
+        validate,
+        resolver,
+        mode = 'onChange',
+        withController = false,
+        withOther = false,
+      }: {
+        validate: (value: string) => Promise<true | string>;
+        resolver?: Resolver<{ name: string }>;
+        mode?: 'onChange' | 'all' | 'onSubmit';
+        withController?: boolean;
+        withOther?: boolean;
+      }) => {
+        const {
+          register,
+          control,
+          handleSubmit,
+          formState: { errors, isValid },
+        } = useForm<{ name: string; other?: string }>({
+          mode,
+          resolver,
+          defaultValues: { name: '', other: 'xyz' },
+        });
+
+        return (
+          <form onSubmit={handleSubmit(noop)}>
+            {withController ? (
+              <Controller
+                control={control}
+                name="name"
+                rules={{ validate }}
+                render={({ field }) => <input {...field} />}
+              />
+            ) : (
+              <input {...register('name', { validate })} />
+            )}
+            {withOther && <input {...register('other', { validate })} />}
+            <p>{errors.name ? errors.name.message : 'no name error'}</p>
+            <p>{errors.other ? errors.other.message : 'no other error'}</p>
+            <p>{isValid ? 'valid' : 'invalid'}</p>
+            <button>submit</button>
+          </form>
+        );
+      };
+
+      it.each([
+        ['onChange mode', { mode: 'onChange' }],
+        ['all mode', { mode: 'all' }],
+        ['a Controller', { withController: true }],
+      ] as const)(
+        'keep the newer error and isValid false with %s',
+        async (_, props) => {
+          const { validate, settle } = setup();
+          render(<Form validate={validate} {...props} />);
+          await settle('');
+
+          fireEvent.change(screen.getByRole('textbox'), {
+            target: { value: 'abc' },
+          });
+          await settle('abc');
+
+          fireEvent.change(screen.getByRole('textbox'), {
+            target: { value: 'ab' },
+          });
+          await settle('ab');
+
+          expect(screen.getByText('too short')).toBeVisible();
+
+          await settle('abc');
+
+          expect(screen.getByText('too short')).toBeVisible();
+          expect(screen.getByText('invalid')).toBeVisible();
+        },
+      );
+
+      it('keep the newer error and isValid false when revalidating after a submit', async () => {
+        const { validate, settle } = setup();
+        render(<Form validate={validate} mode="onSubmit" />);
+        await settle('');
+
+        fireEvent.click(screen.getByRole('button'));
+        await settle('');
+
+        fireEvent.change(screen.getByRole('textbox'), {
+          target: { value: 'abc' },
+        });
+        await settle('abc');
+
+        fireEvent.change(screen.getByRole('textbox'), {
+          target: { value: 'ab' },
+        });
+        await settle('ab');
+        await settle('abc');
+
+        expect(screen.getByText('too short')).toBeVisible();
+        expect(screen.getByText('invalid')).toBeVisible();
+      });
+
+      it('keep isValid false when another field becomes invalid during the check', async () => {
+        const { validate, settle } = setup();
+        render(<Form validate={validate} withOther />);
+        await settle('');
+
+        const [name, other] = screen.getAllByRole('textbox');
+
+        fireEvent.change(name, { target: { value: 'abc' } });
+        await settle('abc');
+        await settle('abc');
+
+        fireEvent.change(other, { target: { value: 'ab' } });
+        await settle('ab');
+        await settle('xyz');
+
+        expect(screen.getByText('no name error')).toBeVisible();
+        expect(screen.getByText('too short')).toBeVisible();
+        expect(screen.getByText('invalid')).toBeVisible();
+      });
+
+      it('apply the isValid check when nothing changed while it ran', async () => {
+        const { validate, settle } = setup();
+        render(<Form validate={validate} />);
+        await settle('');
+
+        fireEvent.change(screen.getByRole('textbox'), {
+          target: { value: 'abc' },
+        });
+        await settle('abc');
+        await settle('abc');
+
+        expect(screen.getByText('no name error')).toBeVisible();
+        expect(screen.getByText('valid')).toBeVisible();
+      });
+
+      it('keep the newer error with a resolver', async () => {
+        const { validate, resolver, settle } = setup();
+        render(<Form validate={validate} resolver={resolver} />);
+        await settle('');
+
+        fireEvent.change(screen.getByRole('textbox'), {
+          target: { value: 'abc' },
+        });
+        fireEvent.change(screen.getByRole('textbox'), {
+          target: { value: 'ab' },
+        });
+        await settle('ab');
+        await settle('abc');
+
+        expect(screen.getByText('too short')).toBeVisible();
+        expect(screen.getByText('invalid')).toBeVisible();
+      });
+    });
   });
 
-  it('should be a proxy object that returns undefined for unknown properties', () => {
+  it('be a proxy object that returns undefined for unknown properties', () => {
     const { result } = renderHook(() => useForm());
 
     // @ts-expect-error it's expected for an undefined property to be a typescript error
     expect(result.current.formState.nonExistentProperty).toBeUndefined();
   });
 
-  it('should be a proxy object that properly implements the has trap', () => {
+  it('be a proxy object that properly implements the has trap', () => {
     const { result } = renderHook(() => useForm());
 
     expect('nonExistentProperty' in result.current.formState).toBeFalsy();
   });
 
-  it('should be a proxy object that hasOwnProperty works on', () => {
+  it('be a proxy object that hasOwnProperty works on', () => {
     const { result } = renderHook(() => useForm());
 
     expect(result.current.formState).toHaveProperty('hasOwnProperty');
@@ -295,7 +688,7 @@ describe('formState', () => {
       foo1: string;
     };
 
-    it('should render isValid as true with reset at useEffect with valid data', async () => {
+    it('render isValid as true with reset at useEffect with valid data', async () => {
       function Component() {
         const {
           register,
@@ -331,7 +724,7 @@ describe('formState', () => {
       expect(await screen.findByText('valid')).toBeVisible();
     });
 
-    it('should render isValid as false with reset at useEffect with valid data', async () => {
+    it('render isValid as false with reset at useEffect with valid data', async () => {
       function Component() {
         const {
           register,
@@ -366,9 +759,483 @@ describe('formState', () => {
 
       expect(await screen.findByText('nope')).toBeVisible();
     });
+
+    // Mirrors e2e/useFormState.spec.ts › "should subscribed to the form
+    // state without re-render the root". reset() must not let a validity
+    // recompute triggered by the root's own re-render (queued when
+    // _state.mount is reset) clobber isValid with a value computed against
+    // the just-reset, now-empty fields.
+    it('end with isValid: true after reset() (matches e2e test baseline expectation)', async () => {
+      let renderCounter = 0;
+
+      type FormInputs = {
+        firstName: string;
+        lastName: string;
+        min: string;
+        max: string;
+        minDate: string;
+        maxDate: string;
+        minLength: string;
+        minRequiredLength: string;
+        selectNumber: string;
+        pattern: string;
+        nestItem: {
+          nest1: string;
+        };
+        arrayItem: {
+          test1: string;
+        }[];
+      };
+
+      const SubForm = ({ control }: { control: Control<FormInputs> }) => {
+        const {
+          isDirty,
+          dirtyFields,
+          touchedFields,
+          isSubmitted,
+          isSubmitSuccessful,
+          submitCount,
+          isValid,
+        } = useFormState({
+          control,
+        });
+
+        return (
+          <p id="state">
+            {JSON.stringify({
+              isDirty,
+              touched: Object.keys(touchedFields),
+              dirty: Object.keys(dirtyFields),
+              isSubmitted,
+              isSubmitSuccessful,
+              submitCount,
+              isValid,
+            })}
+          </p>
+        );
+      };
+
+      const App: React.FC = () => {
+        const {
+          register,
+          handleSubmit,
+          control,
+          reset: resetForm,
+        } = useForm<FormInputs>({
+          mode: 'onChange',
+        });
+        const onValid = () => {};
+
+        renderCounter++;
+
+        return (
+          <form onSubmit={handleSubmit(onValid)}>
+            <input
+              placeholder="nest.nest1"
+              {...register('nestItem.nest1', { required: true })}
+            />
+            <input
+              placeholder="arrayItem.0.test1"
+              {...register('arrayItem.0.test1', { required: true })}
+            />
+            <input
+              {...register('firstName', { required: true })}
+              placeholder="firstName"
+            />
+            <input
+              {...register('lastName', { required: true, maxLength: 5 })}
+              placeholder="lastName"
+            />
+            <input
+              type="number"
+              {...register('min', { min: 10 })}
+              placeholder="min"
+            />
+            <input
+              type="number"
+              {...register('max', { max: 20 })}
+              placeholder="max"
+            />
+            <input
+              type="date"
+              {...register('minDate', { min: '2019-08-01' })}
+              placeholder="minDate"
+            />
+            <input
+              type="date"
+              {...register('maxDate', { max: '2019-08-01' })}
+              placeholder="maxDate"
+            />
+            <input
+              {...register('minLength', { minLength: 2 })}
+              placeholder="minLength"
+            />
+            <input
+              {...register('minRequiredLength', {
+                minLength: 2,
+                required: true,
+              })}
+              placeholder="minRequiredLength"
+            />
+            <select {...register('selectNumber', { required: true })}>
+              <option value="">Select</option>
+              <option value={1}>1</option>
+              <option value={2}>1</option>
+            </select>
+            <input
+              {...register('pattern', { pattern: /\d+/ })}
+              placeholder="pattern"
+            />
+            <button id="submit">Submit</button>
+            <button type="button" id="resetForm" onClick={() => resetForm()}>
+              Reset
+            </button>
+            <div id="renderCount">{renderCounter}</div>
+            <SubForm control={control} />
+          </form>
+        );
+      };
+
+      const type = async (el: HTMLElement, text: string) => {
+        for (const char of text) {
+          fireEvent.focus(el);
+          fireEvent.input(el, {
+            target: { value: (el as HTMLInputElement).value + char },
+          });
+
+          await act(async () => {});
+        }
+      };
+
+      const getState = () =>
+        JSON.parse(screen.getByText(/isValid/).textContent!);
+
+      render(<App />);
+
+      fireEvent.click(screen.getByRole('button', { name: 'Submit' }));
+      await act(async () => {});
+
+      await type(screen.getByPlaceholderText('firstName'), 'bill');
+      await type(screen.getByPlaceholderText('firstName'), 'a');
+      await type(screen.getByPlaceholderText('arrayItem.0.test1'), 'ab');
+      await type(screen.getByPlaceholderText('nest.nest1'), 'ab');
+      await type(screen.getByPlaceholderText('lastName'), 'luo123456');
+
+      fireEvent.focus(screen.getByRole('combobox'));
+      fireEvent.change(screen.getByRole('combobox'), {
+        target: { value: '1' },
+      });
+      fireEvent.blur(screen.getByRole('combobox'));
+      await act(async () => {});
+
+      await type(screen.getByPlaceholderText('pattern'), 'luo');
+      await type(screen.getByPlaceholderText('min'), '1');
+      await type(screen.getByPlaceholderText('max'), '21');
+      fireEvent.input(screen.getByPlaceholderText('minDate'), {
+        target: { value: '2019-07-30' },
+      });
+      await act(async () => {});
+      fireEvent.input(screen.getByPlaceholderText('maxDate'), {
+        target: { value: '2019-08-02' },
+      });
+      await act(async () => {});
+
+      fireEvent.input(screen.getByPlaceholderText('lastName'), {
+        target: { value: '' },
+      });
+      await act(async () => {});
+      await type(screen.getByPlaceholderText('lastName'), 'luo');
+      await type(screen.getByPlaceholderText('minLength'), 'b');
+      fireEvent.blur(screen.getByPlaceholderText('minLength'));
+      await act(async () => {});
+
+      await waitFor(() => {
+        expect(getState()).toEqual(
+          expect.objectContaining({
+            isSubmitted: true,
+            isSubmitSuccessful: false,
+            submitCount: 1,
+          }),
+        );
+      });
+
+      await type(screen.getByPlaceholderText('pattern'), '23');
+      await type(screen.getByPlaceholderText('minLength'), 'bi');
+      await type(screen.getByPlaceholderText('minRequiredLength'), 'bi');
+      fireEvent.input(screen.getByPlaceholderText('min'), {
+        target: { value: '' },
+      });
+      await act(async () => {});
+      await type(screen.getByPlaceholderText('min'), '11');
+      fireEvent.input(screen.getByPlaceholderText('max'), {
+        target: { value: '' },
+      });
+      await act(async () => {});
+      await type(screen.getByPlaceholderText('max'), '19');
+      fireEvent.input(screen.getByPlaceholderText('minDate'), {
+        target: { value: '2019-08-01' },
+      });
+      await act(async () => {});
+      fireEvent.input(screen.getByPlaceholderText('maxDate'), {
+        target: { value: '2019-08-01' },
+      });
+      await act(async () => {});
+
+      await waitFor(() => {
+        expect(getState()).toEqual(expect.objectContaining({ isValid: true }));
+      });
+
+      fireEvent.click(screen.getByRole('button', { name: 'Submit' }));
+      await act(async () => {});
+
+      await waitFor(() => {
+        expect(getState()).toEqual(
+          expect.objectContaining({
+            isSubmitSuccessful: true,
+            submitCount: 2,
+            isValid: true,
+          }),
+        );
+      });
+
+      fireEvent.click(screen.getByRole('button', { name: 'Reset' }));
+      await act(async () => {});
+
+      await waitFor(() => {
+        expect(getState()).toEqual(
+          expect.objectContaining({
+            isDirty: false,
+            touched: [],
+            dirty: [],
+            isSubmitted: false,
+            isSubmitSuccessful: false,
+            submitCount: 0,
+            isValid: true,
+          }),
+        );
+      });
+    });
+
+    it.each([
+      {
+        action: 'types in onSubmit mode',
+        mode: 'onSubmit',
+        defaultValue: '',
+        value: 'xy',
+      },
+      {
+        action: 'types in onTouched mode',
+        mode: 'onTouched',
+        defaultValue: '',
+        value: 'xy',
+      },
+      {
+        action: 'types and blurs in onBlur mode',
+        mode: 'onBlur',
+        defaultValue: '',
+        value: 'xy',
+      },
+      {
+        action: 'clears a valid field',
+        mode: 'onSubmit',
+        defaultValue: 'Mike',
+        value: '',
+      },
+      {
+        action: 'types into a Controller',
+        mode: 'onSubmit',
+        defaultValue: '',
+        value: 'xy',
+        controller: true,
+      },
+      {
+        action: 'types with a resolver',
+        mode: 'onSubmit',
+        defaultValue: '',
+        value: 'xy',
+        withResolver: true,
+      },
+    ] as const)(
+      'recompute preserved isValid when the user $action',
+      async ({ mode, defaultValue, value, ...options }) => {
+        const App = () => {
+          const {
+            register,
+            control,
+            reset,
+            formState: { isValid },
+          } = useForm<{ name: string }>({
+            defaultValues: { name: defaultValue },
+            mode,
+            resolver:
+              'withResolver' in options
+                ? async (values) => {
+                    if (values.name) {
+                      return { values, errors: {} };
+                    }
+                    return {
+                      values: {},
+                      errors: {
+                        name: { type: 'required', message: 'required' },
+                      },
+                    };
+                  }
+                : undefined,
+          });
+
+          return (
+            <form>
+              {'controller' in options ? (
+                <Controller
+                  control={control}
+                  name="name"
+                  rules={{ required: true }}
+                  render={({ field }) => <input {...field} />}
+                />
+              ) : (
+                <input {...register('name', { required: true })} />
+              )}
+              <button
+                type="button"
+                onClick={() => reset({ name: 'x' }, { keepIsValid: true })}
+              >
+                reset
+              </button>
+              <p>is valid: {String(isValid)}</p>
+            </form>
+          );
+        };
+
+        const expectedValid = !!value;
+
+        render(<App />);
+
+        expect(
+          await screen.findByText(`is valid: ${!expectedValid}`),
+        ).toBeVisible();
+
+        fireEvent.click(screen.getByRole('button', { name: 'reset' }));
+        await act(async () => {});
+
+        expect(screen.getByText(`is valid: ${!expectedValid}`)).toBeVisible();
+
+        fireEvent.input(screen.getByRole('textbox'), { target: { value } });
+
+        if (mode === 'onBlur') {
+          fireEvent.blur(screen.getByRole('textbox'));
+        }
+
+        expect(
+          await screen.findByText(`is valid: ${expectedValid}`),
+        ).toBeVisible();
+      },
+    );
+
+    it('recompute preserved isValid when the user types after new values with resetOptions.keepIsValid', async () => {
+      const App = ({ values }: { values: { name: string } }) => {
+        const {
+          register,
+          formState: { isValid },
+        } = useForm({ values, resetOptions: { keepIsValid: true } });
+
+        return (
+          <form>
+            <input {...register('name', { required: true })} />
+            <p>is valid: {String(isValid)}</p>
+          </form>
+        );
+      };
+
+      const { rerender } = render(<App values={{ name: '' }} />);
+
+      expect(await screen.findByText('is valid: false')).toBeVisible();
+
+      rerender(<App values={{ name: 'x' }} />);
+      await act(async () => {});
+
+      expect(screen.getByText('is valid: false')).toBeVisible();
+
+      fireEvent.input(screen.getByRole('textbox'), {
+        target: { value: 'xy' },
+      });
+
+      expect(await screen.findByText('is valid: true')).toBeVisible();
+    });
+
+    type FieldArrayValues = { items: { value: string }[] };
+    const fieldArrayOps: Record<
+      string,
+      (fieldArray: UseFieldArrayReturn<FieldArrayValues>) => void
+    > = {
+      append: ({ append }) => append({ value: 'c' }),
+      prepend: ({ prepend }) => prepend({ value: 'c' }),
+      insert: ({ insert }) => insert(1, { value: 'c' }),
+      remove: ({ remove }) => remove(0),
+      swap: ({ swap }) => swap(0, 1),
+      move: ({ move }) => move(0, 1),
+      update: ({ update }) => update(0, { value: 'c' }),
+      replace: ({ replace }) => replace([{ value: 'c' }]),
+    };
+
+    it.each(Object.entries(fieldArrayOps))(
+      'recompute preserved isValid after a field array %s',
+      async (_, run) => {
+        const App = () => {
+          const {
+            register,
+            control,
+            reset,
+            formState: { isValid },
+          } = useForm<FieldArrayValues>({
+            defaultValues: { items: [{ value: '' }] },
+          });
+          const fieldArray = useFieldArray({ control, name: 'items' });
+
+          return (
+            <form>
+              {fieldArray.fields.map((field, index) => (
+                <input
+                  key={field.id}
+                  {...register(`items.${index}.value`, { required: true })}
+                />
+              ))}
+              <button
+                type="button"
+                onClick={() =>
+                  reset(
+                    { items: [{ value: 'a' }, { value: 'b' }] },
+                    { keepIsValid: true },
+                  )
+                }
+              >
+                reset
+              </button>
+              <button type="button" onClick={() => run(fieldArray)}>
+                op
+              </button>
+              <p>is valid: {String(isValid)}</p>
+            </form>
+          );
+        };
+
+        render(<App />);
+
+        expect(await screen.findByText('is valid: false')).toBeVisible();
+
+        fireEvent.click(screen.getByRole('button', { name: 'reset' }));
+        await act(async () => {});
+
+        expect(screen.getAllByRole('textbox')).toHaveLength(2);
+        expect(screen.getByText('is valid: false')).toBeVisible();
+
+        fireEvent.click(screen.getByRole('button', { name: 'op' }));
+
+        expect(await screen.findByText('is valid: true')).toBeVisible();
+      },
+    );
   });
 
-  it('should not update form state when there is a promise reject', async () => {
+  it('not update form state when there is a promise reject', async () => {
     const rejectPromiseFn = jest
       .fn()
       .mockRejectedValue(new Error('this is an error'));
@@ -401,12 +1268,17 @@ describe('formState', () => {
 
     render(<App />);
 
-    fireEvent.click(screen.getByRole('button'));
+    await act(async () => {
+      fireEvent.click(screen.getByRole('button'));
+    });
 
-    expect(screen.getByText('isNotSubmitSuccessful')).toBeVisible();
+    await waitFor(() => {
+      expect(screen.getByText('isSubmitted')).toBeVisible();
+      expect(screen.getByText('isNotSubmitSuccessful')).toBeVisible();
+    });
   });
 
-  it('should update isValid even with mode set to onSubmit', async () => {
+  it('update isValid even with mode set to onSubmit', async () => {
     const App = () => {
       const {
         register,
@@ -462,7 +1334,7 @@ describe('formState', () => {
     );
   });
 
-  it('should update correct isValid formState with dynamic fields', async () => {
+  it('update correct isValid formState with dynamic fields', async () => {
     const Component = () => {
       const {
         register,
@@ -596,7 +1468,7 @@ describe('formState', () => {
     expect(await screen.findByText('valid')).toBeVisible();
   });
 
-  it('should remind isSubmitting when form is invalid', async () => {
+  it('remind isSubmitting when form is invalid', async () => {
     const submittingState: boolean[] = [];
 
     function App() {
@@ -629,7 +1501,7 @@ describe('formState', () => {
   });
 
   describe('when defaultValue supplied', () => {
-    it('should update isValid to true for validation with inline defaultValue', async () => {
+    it('update isValid to true for validation with inline defaultValue', async () => {
       function App() {
         const {
           register,
@@ -654,7 +1526,7 @@ describe('formState', () => {
       expect(await screen.findByText('isValid = true')).toBeVisible();
     });
 
-    it('should update isValid to true for Controller validation', async () => {
+    it('update isValid to true for Controller validation', async () => {
       function App() {
         const {
           control,
@@ -683,7 +1555,7 @@ describe('formState', () => {
     });
   });
 
-  it('should not update dirty fields during blur event', async () => {
+  it('not update dirty fields during blur event', async () => {
     let dirtyFieldsState = {};
 
     const App = () => {
@@ -712,7 +1584,92 @@ describe('formState', () => {
     expect(dirtyFieldsState).toEqual({});
   });
 
-  it('should update isDirty with getFieldState at child component', () => {
+  it('mark fields named after Object.prototype members as touched on blur', async () => {
+    let touchedFieldsState = {};
+
+    const App = () => {
+      const {
+        register,
+        formState: { touchedFields },
+      } = useForm({
+        defaultValues: { hasOwnProperty: '' },
+      });
+
+      touchedFieldsState = touchedFields;
+
+      return (
+        <form>
+          <input {...register('hasOwnProperty')} />
+        </form>
+      );
+    };
+
+    render(<App />);
+
+    fireEvent.blur(screen.getByRole('textbox'));
+
+    expect(touchedFieldsState).toEqual({ hasOwnProperty: true });
+  });
+
+  it('mark an array-valued registered field dirty as a boolean rather than diffing its elements (#13584)', async () => {
+    function App() {
+      const {
+        register,
+        formState: { isDirty, dirtyFields },
+      } = useForm({
+        defaultValues: { fruits: [] as string[] },
+      });
+
+      return (
+        <div>
+          <select multiple {...register('fruits')}>
+            <option value="apple">apple</option>
+            <option value="banana">banana</option>
+          </select>
+          <p>{isDirty ? 'dirty' : 'notDirty'}</p>
+          <p>{JSON.stringify(dirtyFields)}</p>
+        </div>
+      );
+    }
+
+    render(<App />);
+
+    const select = screen.getAllByRole('listbox')[0] as HTMLSelectElement;
+
+    await act(async () => {
+      select.options[0].selected = true;
+      fireEvent.change(select);
+    });
+
+    expect(await screen.findByText('dirty')).toBeVisible();
+    expect(screen.getByText(JSON.stringify({ fruits: true }))).toBeVisible();
+  });
+
+  it('mark the form dirty when a field named `ref` changes', async () => {
+    const App = () => {
+      const {
+        register,
+        formState: { isDirty },
+      } = useForm({ defaultValues: { ref: '', note: '' } });
+
+      return (
+        <form>
+          <input {...register('ref')} placeholder="ref" />
+          <p>{isDirty ? 'dirty' : 'pristine'}</p>
+        </form>
+      );
+    };
+
+    render(<App />);
+
+    fireEvent.input(screen.getByPlaceholderText('ref'), {
+      target: { value: 'A-100' },
+    });
+
+    expect(await screen.findByText('dirty')).toBeVisible();
+  });
+
+  it('update isDirty with getFieldState at child component', async () => {
     type FormValues = {
       test?: string;
     };
@@ -735,7 +1692,7 @@ describe('formState', () => {
         control,
       });
 
-      return <input {...field} type="text" />;
+      return <input {...field} value={field.value ?? ''} type="text" />;
     };
 
     function App() {
@@ -760,12 +1717,12 @@ describe('formState', () => {
       },
     });
 
-    waitFor(() => {
+    await waitFor(() => {
       screen.getByText('true');
     });
   });
 
-  it('should recompute isDirty after toggling disabled', async () => {
+  it('recompute isDirty after toggling disabled', async () => {
     let isDirty: null | boolean = null;
 
     const App = () => {
@@ -797,7 +1754,7 @@ describe('formState', () => {
     expect(isDirty).toBe(false);
   });
 
-  it('should prevent dirty from updating when the form is disabled', async () => {
+  it('prevent dirty from updating when the form is disabled', async () => {
     function App() {
       const {
         register,
@@ -842,16 +1799,66 @@ describe('formState', () => {
 
     render(<App />);
 
-    await screen.getByText('notDirty');
-    await screen.getByText('0');
+    expect(await screen.findByText('notDirty')).toBeVisible();
+    expect(await screen.findByText('0')).toBeVisible();
+  });
+
+  it('mark field and form as dirty with setValue shouldDirty when the form is disabled', async () => {
+    const { result } = renderHook(() =>
+      useForm({
+        disabled: true,
+        defaultValues: {
+          test: 'a',
+        },
+      }),
+    );
+
+    result.current.formState.isDirty;
+    result.current.formState.dirtyFields;
+
+    await act(async () => {
+      result.current.register('test');
+      result.current.setValue('test', 'b', { shouldDirty: true });
+    });
+
+    expect(result.current.getFieldState('test').isDirty).toBe(true);
+    expect(result.current.formState.isDirty).toBe(true);
+    expect(result.current.formState.dirtyFields).toEqual({ test: true });
+  });
+
+  it('clear dirty state when setValue restores the default value on a disabled form', async () => {
+    const { result } = renderHook(() =>
+      useForm({
+        disabled: true,
+        defaultValues: {
+          test: 'a',
+        },
+      }),
+    );
+
+    result.current.formState.isDirty;
+    result.current.formState.dirtyFields;
+
+    await act(async () => {
+      result.current.register('test');
+      result.current.setValue('test', 'b', { shouldDirty: true });
+    });
+
+    expect(result.current.formState.isDirty).toBe(true);
+
+    await act(async () => {
+      result.current.setValue('test', 'a', { shouldDirty: true });
+    });
+
+    expect(result.current.getFieldState('test').isDirty).toBe(false);
+    expect(result.current.formState.isDirty).toBe(false);
   });
 
   describe('when delay config is set', () => {
     const message = 'required.';
 
-    it('should only show error after 500ms with register', async () => {
+    it('only show error after 500ms with register', async () => {
       jest.useFakeTimers();
-
       const App = () => {
         const {
           register,
@@ -885,12 +1892,15 @@ describe('formState', () => {
 
       expect(screen.queryByText(message)).not.toBeInTheDocument();
 
-      jest.advanceTimersByTime(500);
+      await act(async () => {
+        jest.advanceTimersByTime(500);
+      });
 
       expect(await screen.findByText(message)).toBeVisible();
     });
 
-    it('should only show error after 500ms with Controller', async () => {
+    it('only show error after 500ms with Controller', async () => {
+      jest.useFakeTimers();
       const App = () => {
         const {
           control,
@@ -928,14 +1938,14 @@ describe('formState', () => {
 
       expect(screen.queryByText(message)).not.toBeInTheDocument();
 
-      act(() => {
+      await act(async () => {
         jest.advanceTimersByTime(500);
       });
 
       expect(await screen.findByText(message)).toBeVisible();
     });
 
-    it('should prevent error from showing once input is validated', async () => {
+    it('prevent error from showing once input is validated', async () => {
       jest.useFakeTimers();
 
       const App = () => {
@@ -989,8 +1999,283 @@ describe('formState', () => {
       expect(screen.queryByText(message)).not.toBeInTheDocument();
     });
 
+    it.each(['onChange', 'onTouched', 'all'] as const)(
+      'show the pending error as soon as the field is blurred in %s mode',
+      async (mode) => {
+        jest.useFakeTimers();
+
+        const App = () => {
+          const {
+            register,
+            formState: { errors },
+          } = useForm<{
+            test: string;
+          }>({
+            delayError: 500,
+            mode,
+          });
+
+          return (
+            <div>
+              <input
+                {...register('test', {
+                  maxLength: 4,
+                })}
+              />
+              {errors.test && <p>{message}</p>}
+            </div>
+          );
+        };
+
+        render(<App />);
+
+        const input = screen.getByRole('textbox');
+
+        // touch the field first, so onTouched validates on change as well
+        await act(async () => {
+          fireEvent.blur(input);
+        });
+
+        fireEvent.change(input, {
+          target: {
+            value: '123456',
+          },
+        });
+
+        await act(async () => {
+          jest.advanceTimersByTime(100);
+        });
+
+        expect(screen.queryByText(message)).not.toBeInTheDocument();
+
+        fireEvent.blur(input);
+
+        // let the blur validation settle before any timer runs, as in a browser
+        await act(async () => {});
+
+        await act(async () => {
+          jest.advanceTimersByTime(1);
+        });
+
+        expect(screen.getByText(message)).toBeVisible();
+      },
+    );
+
+    it.each(['onChange', 'onTouched', 'all'] as const)(
+      'cancel the pending error when the value is corrected before blur in %s mode',
+      async (mode) => {
+        jest.useFakeTimers();
+
+        let errorsState = {};
+
+        const App = () => {
+          const {
+            register,
+            formState: { errors },
+          } = useForm<{
+            test: string;
+          }>({
+            delayError: 500,
+            mode,
+          });
+
+          errorsState = errors;
+
+          return (
+            <div>
+              <input
+                {...register('test', {
+                  maxLength: 4,
+                })}
+              />
+              {errors.test && <p>{message}</p>}
+            </div>
+          );
+        };
+
+        render(<App />);
+
+        const input = screen.getByRole('textbox');
+
+        // touch the field first, so onTouched validates on change as well
+        await act(async () => {
+          fireEvent.blur(input);
+        });
+
+        await act(async () => {
+          fireEvent.change(input, {
+            target: {
+              value: '123456',
+            },
+          });
+        });
+
+        await act(async () => {
+          jest.advanceTimersByTime(100);
+        });
+
+        expect(screen.queryByText(message)).not.toBeInTheDocument();
+
+        await act(async () => {
+          fireEvent.change(input, {
+            target: {
+              value: '123',
+            },
+          });
+        });
+
+        fireEvent.blur(input);
+
+        // let the blur validation settle before any timer runs, as in a browser
+        await act(async () => {});
+
+        expect(screen.queryByText(message)).not.toBeInTheDocument();
+
+        await act(async () => {
+          jest.runAllTimers();
+        });
+
+        expect(screen.queryByText(message)).not.toBeInTheDocument();
+        expect(errorsState).toEqual({});
+      },
+    );
+
+    it.each([
+      ['onTouched', 'blur'],
+      ['onTouched', 'change'],
+      ['all', 'blur'],
+      ['all', 'change'],
+    ] as const)(
+      'not show a stale error when the value is corrected during async blur validation in %s mode and the %s validation finishes first',
+      async (mode, finishesFirst) => {
+        jest.useFakeTimers();
+
+        let errorsState = {};
+
+        // an invalid value takes 1000ms to validate, a valid one takes 100ms
+        // when the validation of the corrected value should finish first
+        const validValueDelay = finishesFirst === 'change' ? 100 : 1000;
+
+        const App = () => {
+          const {
+            register,
+            formState: { errors },
+          } = useForm<{
+            test: string;
+          }>({
+            delayError: 500,
+            mode,
+          });
+
+          errorsState = errors;
+
+          return (
+            <div>
+              <input
+                {...register('test', {
+                  validate: (value) =>
+                    new Promise<true | string>((resolve) => {
+                      const isValid = value.length <= 4;
+
+                      setTimeout(
+                        () => resolve(isValid || message),
+                        isValid ? validValueDelay : 1000,
+                      );
+                    }),
+                })}
+              />
+              {errors.test && <p>{message}</p>}
+            </div>
+          );
+        };
+
+        render(<App />);
+
+        const input = screen.getByRole('textbox');
+
+        // touch the field first, so onTouched validates on change as well
+        await act(async () => {
+          fireEvent.blur(input);
+        });
+
+        await act(async () => {
+          jest.advanceTimersByTime(1000);
+        });
+
+        await act(async () => {
+          fireEvent.change(input, {
+            target: {
+              value: '123456',
+            },
+          });
+        });
+
+        // the change validation finishes and its error waits for delayError
+        await act(async () => {
+          jest.advanceTimersByTime(1000);
+        });
+
+        expect(screen.queryByText(message)).not.toBeInTheDocument();
+
+        // blur shows the pending error while the blur validation keeps running
+        await act(async () => {
+          fireEvent.blur(input);
+        });
+
+        await act(async () => {
+          jest.advanceTimersByTime(100);
+        });
+
+        expect(screen.getByText(message)).toBeVisible();
+
+        // correct the value 900ms before the blur validation finishes
+        await act(async () => {
+          fireEvent.change(input, {
+            target: {
+              value: '123',
+            },
+          });
+        });
+
+        if (finishesFirst === 'change') {
+          // the corrected value is validated first
+          await act(async () => {
+            jest.advanceTimersByTime(100);
+          });
+
+          expect(screen.queryByText(message)).not.toBeInTheDocument();
+          expect(errorsState).toEqual({});
+
+          // then the blur validation of the old value finishes with an error
+          await act(async () => {
+            jest.advanceTimersByTime(800);
+          });
+        } else {
+          // the blur validation of the old value finishes first with an error
+          await act(async () => {
+            jest.advanceTimersByTime(900);
+          });
+
+          // then the corrected value is validated
+          await act(async () => {
+            jest.advanceTimersByTime(100);
+          });
+        }
+
+        expect(screen.queryByText(message)).not.toBeInTheDocument();
+        expect(errorsState).toEqual({});
+
+        await act(async () => {
+          jest.runAllTimers();
+        });
+
+        expect(screen.queryByText(message)).not.toBeInTheDocument();
+        expect(errorsState).toEqual({});
+      },
+    );
+
     describe('when delayError is provided', () => {
-      it('should only show error after 500ms with register and render formState instantly', async () => {
+      it('only show error after 500ms with register and render formState instantly', async () => {
         jest.useFakeTimers();
 
         const message = 'required.';
@@ -1040,22 +2325,138 @@ describe('formState', () => {
           });
         });
 
-        await act(async () => {
-          await waitFor(() => screen.getByText('inValid'));
-        });
+        await waitFor(() => screen.getByText('inValid'));
 
         expect(screen.queryByText(message)).toBeNull();
 
-        act(() => {
+        await act(async () => {
           jest.advanceTimersByTime(500);
         });
 
         expect(await screen.findByText(message)).toBeVisible();
       });
+
+      it('delay, show immediately, or cancel error via setValue depending on delayError option', async () => {
+        jest.useFakeTimers();
+
+        const message = 'required.';
+
+        const App = () => {
+          const {
+            register,
+            setValue,
+            formState: { errors },
+          } = useForm<{ test: string }>({
+            delayError: 500,
+          });
+
+          return (
+            <div>
+              <input {...register('test', { maxLength: 4 })} />
+              {errors.test && <p>{message}</p>}
+              <button
+                data-testid="delayed"
+                onClick={() =>
+                  setValue('test', '123456', {
+                    shouldValidate: true,
+                    delayError: true,
+                  })
+                }
+              />
+              <button
+                data-testid="immediate"
+                onClick={() =>
+                  setValue('test', '123456', { shouldValidate: true })
+                }
+              />
+              <button
+                data-testid="valid"
+                onClick={() =>
+                  setValue('test', '12', {
+                    shouldValidate: true,
+                    delayError: true,
+                  })
+                }
+              />
+            </div>
+          );
+        };
+
+        render(<App />);
+
+        await act(async () => {
+          fireEvent.click(screen.getByTestId('delayed'));
+        });
+        expect(screen.queryByText(message)).not.toBeInTheDocument();
+
+        await act(async () => {
+          jest.advanceTimersByTime(500);
+        });
+        expect(await screen.findByText(message)).toBeVisible();
+
+        await act(async () => {
+          fireEvent.click(screen.getByTestId('delayed'));
+        });
+        expect(screen.queryByText(message)).not.toBeInTheDocument();
+
+        await act(async () => {
+          fireEvent.click(screen.getByTestId('valid'));
+        });
+        await act(async () => {
+          jest.advanceTimersByTime(500);
+        });
+        expect(screen.queryByText(message)).not.toBeInTheDocument();
+
+        await act(async () => {
+          fireEvent.click(screen.getByTestId('immediate'));
+        });
+        expect(await screen.findByText(message)).toBeVisible();
+
+        jest.useRealTimers();
+      });
+
+      it('show error immediately when form-level delayError is not configured', async () => {
+        jest.useFakeTimers();
+
+        const message = 'required.';
+
+        const App = () => {
+          const {
+            register,
+            setValue,
+            formState: { errors },
+          } = useForm<{ test: string }>();
+
+          return (
+            <div>
+              <input {...register('test', { maxLength: 4 })} />
+              {errors.test && <p>{message}</p>}
+              <button
+                data-testid="trigger"
+                onClick={() =>
+                  setValue('test', '123456', {
+                    shouldValidate: true,
+                    delayError: true,
+                  })
+                }
+              />
+            </div>
+          );
+        };
+
+        render(<App />);
+
+        await act(async () => {
+          fireEvent.click(screen.getByTestId('trigger'));
+        });
+        expect(await screen.findByText(message)).toBeVisible();
+
+        jest.useRealTimers();
+      });
     });
   });
 
-  it('should return updated value with NaN data type', async () => {
+  it('return updated value with NaN data type', async () => {
     function App() {
       const { register, formState } = useForm({
         mode: 'onChange',
@@ -1091,7 +2492,7 @@ describe('formState', () => {
     });
   });
 
-  it('should only trigger validation on blur', async () => {
+  it('only trigger validation on blur', async () => {
     function App() {
       const { register, formState } = useForm({
         mode: 'onBlur',
@@ -1137,7 +2538,7 @@ describe('formState', () => {
     });
   });
 
-  it('should report isDirty as false on mount when defaultValues contain numeric string keys (issue #13346)', async () => {
+  it('report isDirty as false on mount when defaultValues contain numeric string keys (issue #13346)', async () => {
     function App() {
       const {
         register,
@@ -1167,7 +2568,7 @@ describe('formState', () => {
     });
   });
 
-  it('should not update valid with onBlur mode', async () => {
+  it('not update valid with onBlur mode', async () => {
     function App() {
       const {
         formState: { isValid },
@@ -1193,5 +2594,756 @@ describe('formState', () => {
     await waitFor(() => {
       expect(screen.getByText('no')).toBeInTheDocument();
     });
+  });
+
+  it('produce a new errors reference on each mutation so memoized child components re-render', async () => {
+    type FormValues = { test: string };
+    const errorRefs: object[] = [];
+
+    function ErrorDisplay({
+      errors,
+    }: {
+      errors: FormState<FormValues>['errors'];
+    }) {
+      errorRefs.push(errors);
+      return <p data-testid="error">{errors.test?.message ?? ''}</p>;
+    }
+
+    function App() {
+      const {
+        register,
+        handleSubmit,
+        formState: { errors },
+      } = useForm<FormValues>({
+        mode: 'onChange',
+        defaultValues: { test: '' },
+      });
+      return (
+        <form onSubmit={handleSubmit(noop)}>
+          <input {...register('test', { required: 'required' })} />
+          <ErrorDisplay errors={errors} />
+          <button type="submit">Submit</button>
+        </form>
+      );
+    }
+
+    render(<App />);
+    const input = screen.getByRole('textbox');
+
+    fireEvent.change(input, { target: { value: 'valid' } });
+    await waitFor(() =>
+      expect(screen.getByTestId('error')).toHaveTextContent(''),
+    );
+
+    fireEvent.change(input, { target: { value: '' } });
+    await waitFor(() =>
+      expect(screen.getByTestId('error')).toHaveTextContent('required'),
+    );
+    const refAfterFirstError = errorRefs.at(-1);
+
+    fireEvent.change(input, { target: { value: 'valid' } });
+    await waitFor(() =>
+      expect(screen.getByTestId('error')).toHaveTextContent(''),
+    );
+    const refAfterCleared = errorRefs.at(-1);
+
+    fireEvent.change(input, { target: { value: '' } });
+    await waitFor(() =>
+      expect(screen.getByTestId('error')).toHaveTextContent('required'),
+    );
+    const refAfterSecondError = errorRefs.at(-1);
+
+    expect(refAfterFirstError).not.toBe(refAfterCleared);
+    expect(refAfterCleared).not.toBe(refAfterSecondError);
+  });
+
+  it('produce a new errors reference on setError and clearErrors so memoized child components re-render', async () => {
+    type FormValues = { test: string };
+    const errorRefs: object[] = [];
+
+    function ErrorDisplay({
+      errors,
+    }: {
+      errors: FormState<FormValues>['errors'];
+    }) {
+      errorRefs.push(errors);
+      return <p data-testid="error">{errors.test?.message ?? ''}</p>;
+    }
+
+    function App() {
+      const {
+        setError,
+        clearErrors,
+        formState: { errors },
+      } = useForm<FormValues>({
+        defaultValues: { test: '' },
+      });
+      return (
+        <>
+          <ErrorDisplay errors={errors} />
+          <button
+            type="button"
+            onClick={() =>
+              setError('test', { type: 'server', message: 'first' })
+            }
+          >
+            setFirst
+          </button>
+          <button
+            type="button"
+            onClick={() =>
+              setError('test', { type: 'server', message: 'second' })
+            }
+          >
+            setSecond
+          </button>
+          <button type="button" onClick={() => clearErrors('test')}>
+            clear
+          </button>
+        </>
+      );
+    }
+
+    render(<App />);
+
+    fireEvent.click(screen.getByRole('button', { name: 'setFirst' }));
+    await waitFor(() =>
+      expect(screen.getByTestId('error')).toHaveTextContent('first'),
+    );
+    const refAfterFirstError = errorRefs.at(-1);
+
+    fireEvent.click(screen.getByRole('button', { name: 'setSecond' }));
+    await waitFor(() =>
+      expect(screen.getByTestId('error')).toHaveTextContent('second'),
+    );
+    const refAfterSecondError = errorRefs.at(-1);
+
+    fireEvent.click(screen.getByRole('button', { name: 'clear' }));
+    await waitFor(() =>
+      expect(screen.getByTestId('error')).toHaveTextContent(''),
+    );
+    const refAfterCleared = errorRefs.at(-1);
+
+    expect(refAfterFirstError).not.toBe(refAfterSecondError);
+    expect(refAfterSecondError).not.toBe(refAfterCleared);
+  });
+
+  it.each(['validation completes', 'resetField', 'unregister'] as const)(
+    'should produce a new validatingFields reference after %s so memoized child components re-render',
+    async (action) => {
+      type FormValues = { test: string };
+      let resolveValidate = noop;
+      const validation = new Promise<void>((resolve) => {
+        resolveValidate = resolve;
+      });
+      const PendingFields = React.memo(function PendingFields({
+        validatingFields,
+      }: {
+        validatingFields: FormState<FormValues>['validatingFields'];
+      }) {
+        return (
+          <p data-testid="pending">
+            {Object.keys(validatingFields).join(',') || 'none'}
+          </p>
+        );
+      });
+
+      function App() {
+        const {
+          register,
+          trigger,
+          resetField,
+          unregister,
+          formState: { validatingFields, isValidating },
+        } = useForm<FormValues>({ defaultValues: { test: '' } });
+
+        return (
+          <>
+            <input
+              {...register('test', {
+                validate: async () => {
+                  await validation;
+                  return true;
+                },
+              })}
+            />
+            <PendingFields validatingFields={validatingFields} />
+            <p>{isValidating ? 'validating' : 'idle'}</p>
+            <button type="button" onClick={() => trigger('test')}>
+              validate
+            </button>
+            <button type="button" onClick={() => resetField('test')}>
+              resetField
+            </button>
+            <button type="button" onClick={() => unregister('test')}>
+              unregister
+            </button>
+          </>
+        );
+      }
+
+      render(<App />);
+
+      fireEvent.click(screen.getByRole('button', { name: 'validate' }));
+      expect(await screen.findByText('validating')).toBeVisible();
+      expect(screen.getByTestId('pending')).toHaveTextContent('test');
+
+      try {
+        if (action === 'validation completes') {
+          await act(async () => resolveValidate());
+        } else {
+          fireEvent.click(screen.getByRole('button', { name: action }));
+        }
+
+        expect(await screen.findByText('idle')).toBeVisible();
+        expect(screen.getByTestId('pending')).toHaveTextContent('none');
+      } finally {
+        await act(async () => resolveValidate());
+      }
+    },
+  );
+
+  it('should keep the validatingFields reference when the pending state does not change', async () => {
+    const form = createFormControl({ defaultValues: { test: '', other: '' } });
+    let resolveValidate = noop;
+    const validation = new Promise<void>((resolve) => {
+      resolveValidate = resolve;
+    });
+    const callback = jest.fn();
+
+    form.register('test', {
+      validate: async () => {
+        await validation;
+        return true;
+      },
+    });
+    form.register('other');
+    const unsubscribe = form.subscribe({
+      formState: { validatingFields: true, isValidating: true },
+      callback,
+    });
+    const pending = form.trigger('test');
+    const validatingFields = callback.mock.calls.at(-1)![0].validatingFields;
+    const repeated = form.trigger('test');
+
+    try {
+      expect(callback.mock.calls.at(-1)![0].validatingFields).toBe(
+        validatingFields,
+      );
+      form.resetField('other');
+      expect(callback.mock.calls.at(-1)![0].validatingFields).toBe(
+        validatingFields,
+      );
+      form.unregister('other');
+      expect(callback.mock.calls.at(-1)![0].validatingFields).toBe(
+        validatingFields,
+      );
+
+      form.resetField('test');
+      const cleared = callback.mock.calls.at(-1)![0].validatingFields;
+      resolveValidate();
+      await Promise.all([pending, repeated]);
+      expect(callback.mock.calls.at(-1)![0].validatingFields).toBe(cleared);
+    } finally {
+      unsubscribe();
+      resolveValidate();
+      await Promise.all([pending, repeated]);
+    }
+  });
+
+  it('should preserve validatingFields when subscribers start more validations', async () => {
+    const names = ['one', 'two', 'three'];
+    const form = createFormControl();
+    const complete: (() => void)[] = [];
+    const pending: Promise<boolean>[] = [];
+    const started = new Set<string>();
+    const callback = jest.fn();
+
+    for (const name of names) {
+      form.register(name, {
+        validate: async () => {
+          await new Promise<void>((resolve) => complete.push(resolve));
+          return true;
+        },
+      });
+    }
+
+    const unsubscribe = form.subscribe({
+      formState: { validatingFields: true, isValidating: true },
+      callback: ({ validatingFields }) => {
+        const name = names.find((name) => !started.has(name));
+
+        if (validatingFields.one && name) {
+          started.add(name);
+          pending.push(form.trigger(name));
+        }
+      },
+    });
+    const unsubscribeLast = form.subscribe({
+      formState: { validatingFields: true, isValidating: true },
+      callback,
+    });
+
+    started.add('one');
+    pending.push(form.trigger('one'));
+
+    try {
+      expect(callback).toHaveBeenLastCalledWith(
+        expect.objectContaining({
+          validatingFields: { one: true, two: true, three: true },
+          isValidating: true,
+        }),
+      );
+    } finally {
+      unsubscribe();
+      unsubscribeLast();
+      complete.forEach((resolve) => resolve());
+      await Promise.all(pending);
+    }
+  });
+
+  it('should deliver current validatingFields and isValidating when completion starts another validation', async () => {
+    const form = createFormControl();
+    const complete: (() => void)[] = [];
+    const pending: Promise<boolean>[] = [];
+    const callback = jest.fn();
+    let startNext = false;
+
+    for (const name of ['one', 'two']) {
+      form.register(name, {
+        validate: async () => {
+          await new Promise<void>((resolve) => complete.push(resolve));
+          return true;
+        },
+      });
+    }
+
+    const unsubscribe = form.subscribe({
+      formState: { validatingFields: true, isValidating: true },
+      callback: ({ isValidating }) => {
+        if (startNext && !isValidating) {
+          startNext = false;
+          pending.push(form.trigger('two'));
+        }
+      },
+    });
+    const unsubscribeLast = form.subscribe({
+      formState: { validatingFields: true, isValidating: true },
+      callback,
+    });
+    pending.push(form.trigger('one'));
+
+    try {
+      expect(callback).toHaveBeenLastCalledWith(
+        expect.objectContaining({
+          validatingFields: { one: true },
+          isValidating: true,
+        }),
+      );
+      startNext = true;
+      complete[0]();
+      await pending[0];
+
+      expect(callback).toHaveBeenLastCalledWith(
+        expect.objectContaining({
+          validatingFields: { two: true },
+          isValidating: true,
+        }),
+      );
+
+      complete[1]();
+      await pending[1];
+      for (const [{ validatingFields, isValidating }] of callback.mock.calls) {
+        expect(isValidating).toBe(Object.keys(validatingFields).length > 0);
+      }
+      expect(callback).toHaveBeenLastCalledWith(
+        expect.objectContaining({ validatingFields: {}, isValidating: false }),
+      );
+    } finally {
+      unsubscribe();
+      unsubscribeLast();
+      complete.forEach((resolve) => resolve());
+      await Promise.all(pending);
+    }
+  });
+
+  it('should deliver current form state when a validatingFields subscriber clears another pending field', async () => {
+    const form = createFormControl({ defaultValues: { one: '', two: '' } });
+    const complete: (() => void)[] = [];
+    const callback = jest.fn();
+    let shouldClear = false;
+
+    for (const name of ['one', 'two'] as const) {
+      form.register(name, {
+        validate: async () => {
+          await new Promise<void>((resolve) => complete.push(resolve));
+          return true;
+        },
+      });
+    }
+
+    const unsubscribe = form.subscribe({
+      formState: { validatingFields: true, isValidating: true },
+      callback: ({ validatingFields }) => {
+        if (shouldClear && validatingFields.two) {
+          shouldClear = false;
+          form.resetField('two');
+        }
+      },
+    });
+    const unsubscribeLast = form.subscribe({
+      formState: { validatingFields: true, isValidating: true },
+      callback,
+    });
+    const pending = [form.trigger('one'), form.trigger('two')];
+
+    try {
+      shouldClear = true;
+      form.unregister('one');
+
+      expect(callback).toHaveBeenLastCalledWith(
+        expect.objectContaining({
+          validatingFields: {},
+          isValidating: false,
+        }),
+      );
+    } finally {
+      unsubscribe();
+      unsubscribeLast();
+      complete.forEach((resolve) => resolve());
+      await Promise.all(pending);
+    }
+  });
+
+  type FormValues = { test: string; other: string; rows: { value: string }[] };
+  type Form = UseFormReturn<FormValues> & { remove: (index: number) => void };
+
+  it.each([
+    [
+      'handleSubmit',
+      'test',
+      (form: Form) => form.handleSubmit(noop)(),
+      'other',
+    ],
+    ['trigger', 'test', (form: Form) => form.trigger('test'), ''],
+    ['resetField', 'test', (form: Form) => form.resetField('test'), ''],
+    ['unregister', 'test', (form: Form) => form.unregister('test'), ''],
+    ['remove', 'rows.0.value', (form: Form) => form.remove(0), ''],
+  ] as const)(
+    'should produce a new errors reference after %s so memoized child components re-render',
+    async (_, errorName, action, expected) => {
+      const ErrorNames = React.memo(function ErrorNames({
+        errors,
+      }: {
+        errors: FormState<FormValues>['errors'];
+      }) {
+        return <p data-testid="error">{Object.keys(errors).join(',')}</p>;
+      });
+      let form = {} as Form;
+
+      function App() {
+        const methods = useForm<FormValues>({
+          defaultValues: { test: 'value', other: '', rows: [{ value: '' }] },
+        });
+        const { remove } = useFieldArray({
+          control: methods.control,
+          name: 'rows',
+        });
+        form = { ...methods, remove };
+
+        return (
+          <>
+            <input {...methods.register('test', { required: true })} />
+            <input {...methods.register('other', { required: true })} />
+            <ErrorNames errors={methods.formState.errors} />
+          </>
+        );
+      }
+
+      render(<App />);
+
+      await act(async () => form.setError(errorName, { type: 'server' }));
+      expect(screen.getByTestId('error').textContent).toBe(
+        errorName.split('.')[0],
+      );
+
+      await act(async () => {
+        await action(form);
+      });
+      expect(screen.getByTestId('error').textContent).toBe(expected);
+    },
+  );
+
+  type RowsValues = { rows: { value: string }[] };
+  const minRows = { value: 2, message: 'min' };
+
+  it.each([
+    [
+      'resolver validation',
+      {
+        resolver: async ({ rows }: RowsValues) =>
+          rows.length < minRows.value
+            ? { values: {}, errors: { rows: { type: 'min', message: 'min' } } }
+            : { values: { rows }, errors: {} },
+      },
+      false,
+      'min',
+    ],
+    ['built-in validation', { rules: { minLength: minRows } }, false, 'min'],
+    [
+      'built-in validation clearing the root error',
+      { rules: { minLength: minRows } },
+      true,
+      'none',
+    ],
+  ] as const)(
+    'should produce a new errors reference after useFieldArray %s so memoized child components re-render',
+    async (_, options, hasRootError, expected) => {
+      const RootError = React.memo(function RootError({
+        errors,
+      }: {
+        errors: FormState<RowsValues>['errors'];
+      }) {
+        return (
+          <p data-testid="error">
+            {(errors.rows && errors.rows.root && errors.rows.root.message) ||
+              'none'}
+          </p>
+        );
+      });
+      let form = {} as UseFormReturn<RowsValues> & {
+        fieldArray: UseFieldArrayReturn<RowsValues>;
+      };
+
+      function App() {
+        const methods = useForm<RowsValues>({
+          mode: 'onChange',
+          defaultValues: { rows: [{ value: 'a' }, { value: 'b' }] },
+          resolver: 'resolver' in options ? options.resolver : undefined,
+        });
+        const fieldArray = useFieldArray({
+          control: methods.control,
+          name: 'rows',
+          rules: 'rules' in options ? options.rules : undefined,
+        });
+        form = { ...methods, fieldArray };
+
+        return <RootError errors={methods.formState.errors} />;
+      }
+
+      render(<App />);
+
+      if (hasRootError) {
+        await act(async () =>
+          form.setError('rows.root', { type: 'min', message: 'min' }),
+        );
+        expect(screen.getByTestId('error').textContent).toBe('min');
+      }
+
+      await act(async () => {
+        if (hasRootError) {
+          form.fieldArray.append({ value: 'c' });
+        } else {
+          form.fieldArray.remove(0);
+        }
+      });
+
+      await waitFor(() =>
+        expect(screen.getByTestId('error').textContent).toBe(expected),
+      );
+    },
+  );
+
+  it('not apply a stale NaN validation after the value becomes a number', async () => {
+    const resolvers: Array<() => void> = [];
+
+    const App = () => {
+      const {
+        register,
+        formState: { errors },
+      } = useForm<{ value: number }>({
+        mode: 'onChange',
+      });
+
+      return (
+        <form>
+          <input
+            {...register('value', {
+              valueAsNumber: true,
+              validate: (value) =>
+                new Promise<true | string>((resolve) => {
+                  resolvers.push(() =>
+                    resolve(Number.isNaN(value) ? 'invalid' : true),
+                  );
+                }),
+            })}
+          />
+          {errors.value && <p>{errors.value.message}</p>}
+        </form>
+      );
+    };
+
+    render(<App />);
+
+    const input = screen.getByRole('textbox');
+
+    fireEvent.change(input, { target: { value: 'abc' } });
+    fireEvent.change(input, { target: { value: '5' } });
+
+    expect(resolvers).toHaveLength(2);
+
+    await act(async () => {
+      resolvers[1]();
+    });
+
+    expect(screen.queryByText('invalid')).not.toBeInTheDocument();
+
+    await act(async () => {
+      resolvers[0]();
+    });
+
+    expect(screen.queryByText('invalid')).not.toBeInTheDocument();
+  });
+
+  it('not apply a stale Invalid Date validation after the value becomes a valid date', async () => {
+    const resolvers: Array<() => void> = [];
+
+    const App = () => {
+      const {
+        control,
+        formState: { errors },
+      } = useForm<{ test: Date }>({
+        mode: 'onChange',
+      });
+
+      return (
+        <form>
+          <Controller
+            name="test"
+            control={control}
+            render={({ field: { onChange } }) => (
+              <input
+                onChange={(event: React.ChangeEvent<HTMLInputElement>) => {
+                  onChange(new Date(event.target.value));
+                }}
+              />
+            )}
+            rules={{
+              validate: (value) =>
+                new Promise<true | string>((resolve) => {
+                  resolvers.push(() =>
+                    resolve(
+                      value instanceof Date && Number.isNaN(value.getTime())
+                        ? 'invalid'
+                        : true,
+                    ),
+                  );
+                }),
+            }}
+          />
+          {errors.test && <p>{errors.test.message}</p>}
+        </form>
+      );
+    };
+
+    render(<App />);
+
+    const input = screen.getByRole('textbox');
+
+    fireEvent.change(input, { target: { value: 'not-a-date' } });
+    fireEvent.change(input, { target: { value: '2024-10-16' } });
+
+    expect(resolvers).toHaveLength(2);
+
+    await act(async () => {
+      resolvers[1]();
+    });
+
+    expect(screen.queryByText('invalid')).not.toBeInTheDocument();
+
+    await act(async () => {
+      resolvers[0]();
+    });
+
+    expect(screen.queryByText('invalid')).not.toBeInTheDocument();
+  });
+
+  describe('with Activity', () => {
+    itWithActivity(
+      'should resync isSubmitting after Activity restoration when a submit resolves while hidden',
+      async () => {
+        type FormValues = { amount: string };
+
+        let resolveSubmit: () => void = () => {
+          throw new Error('Submit was not started.');
+        };
+
+        const ActivityContent = () => {
+          const { register, handleSubmit, formState } = useForm<FormValues>();
+
+          return (
+            <form
+              onSubmit={handleSubmit(
+                () =>
+                  new Promise<void>((resolve) => {
+                    resolveSubmit = resolve;
+                  }),
+              )}
+            >
+              <input {...register('amount')} />
+              <button
+                type="submit"
+                disabled={formState.isSubmitting}
+                data-testid="submit"
+              >
+                Review
+              </button>
+            </form>
+          );
+        };
+
+        const Component = () => {
+          const [mode, setMode] = React.useState<'hidden' | 'visible'>(
+            'visible',
+          );
+
+          return (
+            <>
+              <button type="button" onClick={() => setMode('hidden')}>
+                Hide
+              </button>
+              <button type="button" onClick={() => setMode('visible')}>
+                Show
+              </button>
+              <Activity mode={mode}>
+                <ActivityContent />
+              </Activity>
+            </>
+          );
+        };
+
+        render(<Component />);
+
+        await act(async () => {
+          fireEvent.submit(screen.getByTestId('submit').closest('form')!);
+          await Promise.resolve();
+        });
+
+        expect(screen.getByTestId('submit')).toBeDisabled();
+
+        // The parent hides the subtree while the submit is still in flight,
+        // matching the reported race in #13563.
+        fireEvent.click(screen.getByRole('button', { name: 'Hide' }));
+
+        await act(async () => {
+          resolveSubmit();
+          await Promise.resolve();
+        });
+
+        fireEvent.click(screen.getByRole('button', { name: 'Show' }));
+
+        expect(screen.getByTestId('submit')).not.toBeDisabled();
+      },
+    );
   });
 });

@@ -23,7 +23,7 @@ describe('append', () => {
     i = 0;
   });
 
-  it('should append dirtyFields fields correctly', async () => {
+  it('append dirtyFields fields correctly', async () => {
     let dirtyInputs = {};
     const Component = () => {
       const {
@@ -81,7 +81,7 @@ describe('append', () => {
     });
   });
 
-  it('should not mark unrelated fields as dirty when appending to field array', async () => {
+  it('not mark unrelated fields as dirty when appending to field array', async () => {
     let dirtyInputs = {};
     const Component = () => {
       const {
@@ -131,7 +131,7 @@ describe('append', () => {
     });
   });
 
-  it('should append data into the fields', () => {
+  it('append data into the fields', () => {
     let currentFields: unknown[] = [];
     const Component = () => {
       const { register, control } = useForm<{
@@ -246,7 +246,7 @@ describe('append', () => {
     },
   );
 
-  it('should trigger reRender when user is watching the all field array', () => {
+  it('trigger reRender when user is watching the all field array', () => {
     const watched: unknown[] = [];
     const Component = () => {
       const { register, watch, control } = useForm<{
@@ -282,7 +282,7 @@ describe('append', () => {
     ]);
   });
 
-  it('should focus if shouldFocus is true', () => {
+  it('focus if shouldFocus is true', () => {
     const Component = () => {
       const { register, control } = useForm<{
         test: { value: string }[];
@@ -314,7 +314,7 @@ describe('append', () => {
     expect(document.activeElement).toEqual(inputs[2]);
   });
 
-  it('should not focus if shouldFocus is false', () => {
+  it('not focus if shouldFocus is false', () => {
     const Component = () => {
       const { register, control } = useForm<{
         test: { value: string }[];
@@ -348,7 +348,7 @@ describe('append', () => {
     expect(document.activeElement).toEqual(document.body);
   });
 
-  it('should return watched value with watch API', async () => {
+  it('return watched value with watch API', async () => {
     const renderedItems: any = [];
     const Component = () => {
       const { watch, register, control } = useForm<{
@@ -386,7 +386,7 @@ describe('append', () => {
     );
   });
 
-  it('should append nested field value without its reference', () => {
+  it('append nested field value without its reference', () => {
     type FormValues = {
       test: { name: { deep: string } }[];
     };
@@ -470,7 +470,7 @@ describe('append', () => {
   });
 
   describe('with resolver', () => {
-    it('should invoke resolver when formState.isValid true', async () => {
+    it('invoke resolver when formState.isValid true', async () => {
       const resolver = jest.fn().mockReturnValue({});
 
       const { result } = renderHook(() => {
@@ -501,7 +501,7 @@ describe('append', () => {
       );
     });
 
-    it('should not invoke resolver when formState.isValid false', () => {
+    it('not invoke resolver when formState.isValid false', () => {
       const resolver = jest.fn().mockReturnValue({});
 
       const { result } = renderHook(() => {
@@ -520,7 +520,7 @@ describe('append', () => {
       expect(resolver).toHaveBeenCalled();
     });
 
-    it('should not invoke resolver per register during append; only array-scoped + final isValid', async () => {
+    it('not invoke resolver per register during append; only array-scoped + final isValid', async () => {
       const resolver = jest
         .fn()
         .mockImplementation((values) => ({ values, errors: {} }));
@@ -575,7 +575,7 @@ describe('append', () => {
     });
   });
 
-  it('should not omit keyName when provided', async () => {
+  it('not omit keyName when provided', async () => {
     type FormValues = {
       test: {
         test: string;
@@ -631,7 +631,7 @@ describe('append', () => {
     ).toBeVisible();
   });
 
-  it('should not omit keyName when provided and defaultValue is empty', async () => {
+  it('not omit keyName when provided and defaultValue is empty', async () => {
     type FormValues = {
       test: {
         test: string;
@@ -679,5 +679,121 @@ describe('append', () => {
     expect(
       await screen.findByText('{"test":[{"id":"whatever","test":"1234"}]}'),
     ).toBeVisible();
+  });
+
+  it('keep the value of a controlled field mounted in the same commit as an append to another field array', async () => {
+    let getValues: () => unknown = () => ({});
+
+    const OtherInput = ({ control }: { control: Control<FormValues> }) => {
+      const { field } = useController({
+        control,
+        name: 'b.1.value',
+        defaultValue: 'mounted-with-append',
+      });
+      return <input {...field} />;
+    };
+
+    type FormValues = {
+      a: { value: string }[];
+      b: { value: string }[];
+    };
+
+    const App = () => {
+      const [extra, setExtra] = React.useState(false);
+      const methods = useForm<FormValues>({
+        defaultValues: { a: [{ value: 'a0' }], b: [{ value: 'b0' }] },
+      });
+      getValues = methods.getValues;
+      const { fields: aFields, append } = useFieldArray({
+        control: methods.control,
+        name: 'a',
+      });
+      useFieldArray({ control: methods.control, name: 'b' });
+
+      return (
+        <div>
+          <p>{aFields.length}</p>
+          {extra && <OtherInput control={methods.control} />}
+          <button
+            type="button"
+            onClick={() => {
+              append({ value: 'a1' });
+              setExtra(true);
+            }}
+          >
+            append
+          </button>
+        </div>
+      );
+    };
+
+    render(<App />);
+
+    fireEvent.click(screen.getByRole('button'));
+    await act(async () => {});
+
+    expect(getValues()).toEqual({
+      a: [{ value: 'a0' }, { value: 'a1' }],
+      b: [{ value: 'b0' }, { value: 'mounted-with-append' }],
+    });
+  });
+
+  it('materialize a controlled field staged at the end of the array appended to in the same commit', async () => {
+    type FormValues = { test: { value: string }[] };
+
+    let getValues: () => unknown = () => ({});
+
+    const StagedInput = ({
+      control,
+      index,
+    }: {
+      control: Control<FormValues>;
+      index: number;
+    }) => {
+      const { field } = useController({
+        control,
+        name: `test.${index}.value` as const,
+        defaultValue: 'staged-by-user',
+      });
+      return <input {...field} />;
+    };
+
+    const App = () => {
+      const methods = useForm<FormValues>({
+        defaultValues: { test: [{ value: 't0' }] },
+      });
+      getValues = methods.getValues;
+      const { fields, append } = useFieldArray({
+        control: methods.control,
+        name: 'test',
+      });
+      const [staged, setStaged] = React.useState(false);
+
+      return (
+        <div>
+          {staged && (
+            <StagedInput control={methods.control} index={fields.length} />
+          )}
+          <button
+            type="button"
+            onClick={() => {
+              append({ value: 't1' });
+              setStaged(true);
+            }}
+          >
+            append
+          </button>
+        </div>
+      );
+    };
+
+    render(<App />);
+
+    fireEvent.click(screen.getByRole('button'));
+    await act(async () => {});
+
+    expect(getValues()).toEqual({
+      test: [{ value: 't0' }, { value: 't1' }, { value: 'staged-by-user' }],
+    });
   });
 });

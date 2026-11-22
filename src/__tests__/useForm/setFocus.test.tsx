@@ -4,7 +4,7 @@ import { act, render, screen, waitFor } from '@testing-library/react';
 import { useForm } from '../../useForm';
 
 describe('setFocus', () => {
-  it('should focus input when called after setError', async () => {
+  it('focus input when called after setError', async () => {
     const App = () => {
       const { register, setError, setFocus } = useForm({
         mode: 'onChange',
@@ -47,7 +47,7 @@ describe('setFocus', () => {
     );
   });
 
-  it('should focus the correct field', async () => {
+  it('focus the correct field', async () => {
     const Component = () => {
       const { register, setFocus } = useForm();
 
@@ -81,7 +81,7 @@ describe('setFocus', () => {
     );
   });
 
-  it('should select the field value when shouldSelect is true', async () => {
+  it('select the field value when shouldSelect is true', async () => {
     const Component = () => {
       const { register, setFocus } = useForm();
 
@@ -117,7 +117,97 @@ describe('setFocus', () => {
     );
   });
 
-  it('should work with field arrays', async () => {
+  it.each(['radio', 'checkbox'])(
+    'focus the first enabled option when the first %s option is disabled',
+    async (type) => {
+      const Component = () => {
+        const { register, setFocus } = useForm<{ choice: string }>();
+
+        return (
+          <form>
+            <input
+              aria-label="Unavailable"
+              type={type}
+              value="a"
+              disabled
+              {...register('choice')}
+            />
+            <input
+              aria-label="Available"
+              type={type}
+              value="b"
+              {...register('choice')}
+            />
+            <button
+              type="button"
+              onClick={() => {
+                setFocus('choice');
+              }}
+            >
+              setFocus
+            </button>
+          </form>
+        );
+      };
+
+      render(<Component />);
+
+      screen.getByRole('button').click();
+
+      await waitFor(
+        () => {
+          expect(document.activeElement).toBe(
+            screen.getByLabelText('Available'),
+          );
+        },
+        { timeout: 100 },
+      );
+    },
+  );
+
+  it('focus the first option of a radio group when it is enabled', async () => {
+    const Component = () => {
+      const { register, setFocus } = useForm<{ choice: string }>();
+
+      return (
+        <form>
+          <input
+            aria-label="First"
+            type="radio"
+            value="a"
+            {...register('choice')}
+          />
+          <input
+            aria-label="Second"
+            type="radio"
+            value="b"
+            {...register('choice')}
+          />
+          <button
+            type="button"
+            onClick={() => {
+              setFocus('choice');
+            }}
+          >
+            setFocus
+          </button>
+        </form>
+      );
+    };
+
+    render(<Component />);
+
+    screen.getByRole('button').click();
+
+    await waitFor(
+      () => {
+        expect(document.activeElement).toBe(screen.getByLabelText('First'));
+      },
+      { timeout: 100 },
+    );
+  });
+
+  it('work with field arrays', async () => {
     const Component = () => {
       const { register, setFocus } = useForm();
 

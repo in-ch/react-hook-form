@@ -3,7 +3,6 @@ import isCheckBox from '../utils/isCheckBoxInput';
 import isFileInput from '../utils/isFileInput';
 import isMultipleSelect from '../utils/isMultipleSelect';
 import isRadioInput from '../utils/isRadioInput';
-import isUndefined from '../utils/isUndefined';
 
 import getCheckboxValue from './getCheckboxValue';
 import getFieldValueAs from './getFieldValueAs';
@@ -21,12 +20,16 @@ export default function getFieldValue(_f: Field['_f']) {
   }
 
   if (isMultipleSelect(ref)) {
-    return [...ref.selectedOptions].map(({ value }) => value);
+    return [...ref.selectedOptions]
+      .filter(
+        (option) => !option.disabled && !option.closest?.('optgroup[disabled]'),
+      )
+      .map(({ value }) => value);
   }
 
   if (isCheckBox(ref)) {
     return getCheckboxValue(_f.refs).value;
   }
 
-  return getFieldValueAs(isUndefined(ref.value) ? _f.ref.value : ref.value, _f);
+  return getFieldValueAs(ref.value, _f);
 }

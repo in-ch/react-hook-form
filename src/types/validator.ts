@@ -14,7 +14,7 @@ export type ValidationRule<
 export type ValidationValueMessage<
   TValidationValue extends ValidationValue = ValidationValue,
 > = {
-  value: TValidationValue;
+  value: TValidationValue | undefined;
   message: Message;
 };
 
@@ -26,7 +26,7 @@ export type FormValidateResult<T> =
         keyof T,
         {
           message: Message | Message[] | boolean | undefined;
-          type: string;
+          type?: string;
         }
       >
     >
